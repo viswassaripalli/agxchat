@@ -28,6 +28,7 @@ while [ $# -gt 0 ]; do
     --from) FROM="$2"; shift 2 ;;
     --expect) EXPECT="$2"; shift 2 ;;
     --for|--requested-by) REQUESTED_BY="$2"; shift 2 ;;
+    --via) VIA="$2"; shift 2 ;;
     --pointer) POINTERS+=("$2"); shift 2 ;;
     --inline) INLINE=1; shift ;;
     *) ARGS+=("$1"); shift ;;
@@ -54,6 +55,7 @@ fi
 INLINE="${INLINE:-1}"
 EXPECT="${EXPECT:-}"
 REQUESTED_BY="${REQUESTED_BY:-${AGX_FOR:-${HERDR_MAIL_FOR:-}}}"
+VIA="${VIA:-}"
 POINTERS=("${POINTERS[@]:-}")
 
 jq_or_cat() { python3 -m json.tool 2>/dev/null || cat; }
@@ -125,18 +127,19 @@ for a in json.load(sys.stdin)['agents']:
     BODY="$*"
     python3 -c "
 import json,sys,urllib.request
-frm,to,subject,body,inline,base,expect,requested_by = sys.argv[1:9]
-pointers=[p for p in sys.argv[9:] if p]
+frm,to,subject,body,inline,base,expect,requested_by,via = sys.argv[1:10]
+pointers=[p for p in sys.argv[10:] if p]
 payload={'from':frm,'to':to,'subject':subject,'body':body,'inline':inline=='1'}
 if expect: payload['expect']=expect
 if requested_by: payload['requested_by']=requested_by
+if via: payload['via']=via
 if pointers: payload['pointers']=pointers
 req=urllib.request.Request(base+'/mail',json.dumps(payload).encode(),{'Content-Type':'application/json'})
 try:
     print(json.dumps(json.load(urllib.request.urlopen(req)),indent=2))
 except urllib.error.HTTPError as e:
     print(e.read().decode()); sys.exit(1)
-" "$FROM" "$TO" "$SUBJECT" "$BODY" "$INLINE" "$BASE" "$EXPECT" "$REQUESTED_BY" "${POINTERS[@]}"
+" "$FROM" "$TO" "$SUBJECT" "$BODY" "$INLINE" "$BASE" "$EXPECT" "$REQUESTED_BY" "$VIA" "${POINTERS[@]}"
     ;;
   inbox)
     WHO="${1:-$FROM}"
@@ -151,6 +154,17 @@ for m in ms:
     print('   '+m['body'].replace(chr(10),chr(10)+'   '))
     if m['pointers']: print('   files:', ', '.join(m['pointers']))
     print()"
+    ;;
+  provenance)
+    curl -s "$BASE/provenance" | python3 -c "
+import json,sys
+d=json.load(sys.stdin)
+if not d['claims']: print('no claims of human authority'); raise SystemExit
+for c in d['claims']:
+    flag='SECOND-HAND via '+str(c['via']) if c['kind']=='second-hand' else 'first-hand'
+    print(f\"{c['id']} {c['from']:9}-> {c['to']:9} for {c['requested_by']:8} [{flag}]  {c['subject'][:40]}\")
+print()
+print('second-hand claims:', d['second_hand'], '| dangling via refs:', d['dangling'] or 'none')"
     ;;
   deleted)
     curl -s "$BASE/deleted" | python3 -c "

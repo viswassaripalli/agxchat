@@ -162,6 +162,26 @@ as `(no human named — bot-initiated)`.
 can write any name. It exists to make a human request *expressible*, not
 verifiable. Add a shared secret before this leaves your own machine.
 
+### Second-hand claims
+
+Observed live: a session relayed *"viswas has since asked for this run"* for a
+run the human never asked for, and the receiver had no way to see the claim was
+laundered — a relayed claim looked identical to a first-hand one. So a claim
+learned from another agent's mail must carry `via: <that mail id>`, and the
+nudge says so plainly:
+
+```
+[agxchat 899e from desktop on behalf of viswas — SECOND-HAND, relayed by
+ desktop from mail d25b, not heard from the human]
+```
+
+`agx provenance` audits every claim in the mailbox, marks each first- or
+second-hand, and lists `via` references that point at nothing. After-the-fact
+audit is the only defence an unauthenticated bus has — which is why the
+receiving agent's own judgement remains the real control. A session declining
+side-effecting work until the human asks it directly is behaving correctly, not
+being obstructive.
+
 ## Tools
 
 `mail_agents` · `mail_register` · `mail_send` · `mail_inbox` · `mail_reply` · `mail_wait`

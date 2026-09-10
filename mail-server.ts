@@ -62,6 +62,15 @@ type Mail = {
    * default, and this is what lets a human's request be distinguishable at all.
    */
   requestedBy: string | null;
+  /**
+   * When `requestedBy` is second-hand — the sender learned of the request from
+   * another agent's mail rather than from the human — this is that mail's id.
+   * Observed live: a session relayed "viswas has since asked for this" for a
+   * run the human never asked for, and the receiver could not tell the claim
+   * was laundered. A first-hand claim is already weak (unauthenticated
+   * localhost); a relayed one is weaker, and must not look identical.
+   */
+  via: string | null;
   nudgedAt: number | null;
   /** Set when the target started working after the nudge: it picked this up. */
   engagedAt: number | null;
@@ -259,7 +268,11 @@ function nudgeText(m: Mail): string {
       ? `[agxchat reply ${m.id} from ${m.from}] ${m.subject} — ${m.body}`
       : `mail ${m.id}: reply from ${m.from} — call mail_inbox`;
   }
-  const behalf = m.requestedBy ? ` on behalf of ${m.requestedBy}` : '';
+  const behalf = m.requestedBy
+    ? m.via
+      ? ` on behalf of ${m.requestedBy} — SECOND-HAND, relayed by ${m.from} from mail ${m.via}, not heard from the human`
+      : ` on behalf of ${m.requestedBy}`
+    : '';
   if (!m.inline) return `mail ${m.id} from ${m.from}${behalf} — call mail_inbox`;
   // Fallback for a session that has not wired up the mail MCP server yet: the
   // question rides in the TTY and the answer comes back the same way.
@@ -558,12 +571,19 @@ function buildMcpServer(identity: string | null) {
           .string()
           .optional()
           .describe(
-            'the human who asked you to send this, if a person did. Unverified — the receiver treats it as a claim, ' +
-              'not proof. Omit it when you are acting on your own initiative.',
+            'the human who asked you to send this, if a person did IN THIS SESSION. Unverified — the receiver treats ' +
+              'it as a claim, not proof. Omit it when you are acting on your own initiative.',
+          ),
+        via: z
+          .string()
+          .optional()
+          .describe(
+            'REQUIRED if requested_by is second-hand: the id of the mail that told you the human asked. Relaying ' +
+              'another agent\'s claim as if you heard it from the human yourself is how a fabricated approval spreads.',
           ),
       },
     },
-    async ({ to, subject, body, pointers, expect, kind, inline, requested_by }) => {
+    async ({ to, subject, body, pointers, expect, kind, inline, requested_by, via }) => {
       const from = me();
       if (!from) return noIdentity();
       if (body.length > MAX_BODY) {
@@ -597,6 +617,7 @@ function buildMcpServer(identity: string | null) {
         inline: inline ?? false,
         notify: true,
         requestedBy: requested_by ?? null,
+        via: via ?? null,
         nudgedAt: null,
         engagedAt: null,
       };
@@ -611,6 +632,8 @@ function buildMcpServer(identity: string | null) {
         to: m.to,
         via: resolved.via,
         requested_by: m.requestedBy,
+        via: m.via,
+        provenance: m.requestedBy ? (m.via ? 'second-hand (relayed)' : 'first-hand claim, unverified') : 'none',
         target: res.pane ? { paneId: res.pane.paneId, repo: res.pane.repo, status: res.pane.status } : null,
         delivery: res.delivery,
         detail: res.detail,
@@ -702,6 +725,7 @@ function buildMcpServer(identity: string | null) {
         inline: orig.inline,
         notify: orig.notify, // a TUI-only sender stays TUI-only for the reply
         requestedBy: orig.requestedBy,
+        via: orig.via,
         nudgedAt: null,
         engagedAt: null,
       };
@@ -933,6 +957,7 @@ app.post('/mail', async (req, res) => {
     requestedBy: typeof req.body?.requested_by === 'string' && req.body.requested_by.trim()
       ? req.body.requested_by.trim()
       : null,
+    via: typeof req.body?.via === 'string' && req.body.via.trim() ? req.body.via.trim() : null,
     nudgedAt: null, engagedAt: null,
   };
   mail.set(m.id, m);
@@ -960,7 +985,7 @@ app.post('/reply', async (req, res) => {
     subject: `re: ${orig.subject}`, body, pointers, expect: null, replyTo: orig.id, data,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
-    nudgedAt: null, engagedAt: null,
+    via: orig.via, nudgedAt: null, engagedAt: null,
   };
   mail.set(reply.id, reply);
   await persist(reply);
@@ -969,6 +994,33 @@ app.post('/reply', async (req, res) => {
   const out = await deliver(reply, { silent: waiting });
   await persist(reply);
   res.json({ ok: true, id: reply.id, to: reply.to, delivery: out.delivery });
+});
+
+/**
+ * Provenance audit. Every claim of human authority in the mailbox, so a
+ * fabricated one can be found after the fact — which is the only defence an
+ * unauthenticated bus has.
+ */
+app.get('/provenance', (_req, res) => {
+  const claims = [...mail.values()]
+    .filter((m) => m.requestedBy)
+    .sort((a, b) => a.createdAt - b.createdAt)
+    .map((m) => ({
+      id: m.id,
+      from: m.from,
+      to: m.to,
+      subject: m.subject,
+      requested_by: m.requestedBy,
+      via: m.via,
+      kind: m.via ? 'second-hand' : 'first-hand',
+      via_exists: m.via ? mail.has(m.via) : null,
+      via_claim: m.via ? (mail.get(m.via)?.requestedBy ?? null) : null,
+    }));
+  res.json({
+    claims,
+    second_hand: claims.filter((c) => c.kind === 'second-hand').length,
+    dangling: claims.filter((c) => c.via && !c.via_exists).map((c) => c.id),
+  });
 });
 
 /** What a delete hid, and can be brought back. */
