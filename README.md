@@ -21,21 +21,38 @@ tiny CLI; [herdr](https://github.com/herdrdev/herdr) carries only the wake-up.
 
 ## Install
 
+One command, and you can talk to your other sessions:
+
 ```bash
 curl -fsSL https://raw.githubusercontent.com/viswassaripalli/agxchat/main/install.sh | bash
 ```
 
-That leaves the server running and the chat open in its own herdr workspace
-called **AGxChat** — an install you cannot see is an install you still have to
-be told how to finish. `AGX_NO_START=1` skips it for scripted setups, and
-`agx uninstall --yes` closes the workspace again.
+It clones to `~/.agxchat`, installs dependencies, links `agx`, detects your
+sessions from the panes herdr can see, writes the rule that teaches sessions to
+use it, starts the server, and opens the chat in its own **AGxChat** workspace.
+Then, in any session:
 
-Then:
+```
+ask tests whether the dashboard suite is green
+```
+
+Nothing else to configure. Re-running it updates in place, and
+`agx uninstall --yes` reverses every one of those steps.
+
+Two of those steps touch things outside the install directory, so both are
+announced and both can be skipped:
+
+| | |
+| --- | --- |
+| `AGX_NO_RULE=1` | do not add the block to `~/.claude/CLAUDE.md` (it is backed up and marked; `agx rule remove` undoes it) |
+| `AGX_NO_START=1` | do not start the server or open the workspace |
+
+Useful afterwards:
 
 ```bash
-agx seed                         # who is addressable (the installer detects this)
-agx rule install                 # teach your sessions to use it (see below)
 agx agents                       # who is live
+agx whoami                       # your own mailbox
+agx inbox                        # what came back
 agx send tests "Run the suite" "Against the staging fixture" --for "$USER"
 ```
 

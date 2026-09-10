@@ -60,6 +60,15 @@ if [ ! -f "$DIR/agents.json" ]; then
   fi
 fi
 
+# Teach the sessions. This edits the user's CLAUDE.md, which is why it is
+# announced, backed up, and removable with one command — but leaving it out
+# means installing something no session will ever reach for. AGX_NO_RULE=1
+# skips it.
+if [ "${AGX_NO_RULE:-0}" != "1" ]; then
+  python3 "$DIR/rule.py" install "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md" "$DIR/claude-rule.md" \
+    | sed 's/^/  /' || say "could not write the rule — run: agx rule install"
+fi
+
 # Start it and open the chat space. An install you cannot see is an install you
 # have to be told how to finish; AGX_NO_START=1 skips this for scripted setups.
 if [ "${AGX_NO_START:-0}" != "1" ] && command -v herdr >/dev/null 2>&1; then
@@ -82,26 +91,23 @@ print(next((w['workspace_id'] for w in ws if (w.get('label') or '').lower() == '
 fi
 
 VERSION="$(git -C "$DIR" rev-parse --short HEAD)"
-RULE_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
-RULE_STATE="not installed"
-grep -qF "<!-- agxchat:begin -->" "$RULE_FILE" 2>/dev/null && RULE_STATE="installed"
-
+SEED_COUNT=$(python3 -c "
+import json
+try: print(len(json.load(open('$DIR/agents.json'))['agents']))
+except Exception: print('?')
+" 2>/dev/null || echo '?')
 cat <<EOF
 
-AGxChat installed at $DIR ($VERSION)
+AGxChat is ready ($VERSION, at $DIR)
 
-The server is running and the AGxChat workspace is open.
+  · server running on http://127.0.0.1:7777
+  · chat open in the AGxChat workspace
+  · $SEED_COUNT sessions addressable — agx agents
+  · your sessions told how to use it — restart one, then just say:
 
-  1. check the seed:  agx seed            (agx seed detect re-scans, edit opens it)
-  2. teach sessions:  agx rule install     (currently: $RULE_STATE)
-  3. see who is live: agx agents
-  4. send something:  agx send <name> "<subject>" "<body>" --for "\$USER"
+      ask <name> whether the build is green
 
-  remove it all:      agx uninstall --yes
-
-Step 2 is not optional if you want to say "ask <name> ..." in plain words:
-the CLI works either way, but a session only reaches for it when its CLAUDE.md
-says to. \`agx rule show\` prints the block first; \`agx rule remove\` undoes it.
-
-Update later with:   agx update
+  agx seed             who is addressable        agx update      pull changes
+  agx whoami           your own mailbox          agx rule show   what sessions were told
+  agx inbox            what came back            agx uninstall --yes   remove it all
 EOF
