@@ -44,6 +44,88 @@ duplication. This exists because a mailbox reached over HTTP and a nudge typed
 into a TTY assume nothing about who is reading — which is the only way a Claude
 session and a Codex session talk at all.
 
+## The finding: a relayed claim looks exactly like a first-hand one
+
+This is the part worth reading even if you never install anything.
+
+A session was asked to get a test suite run. It could not do that itself, so it
+mailed the session that could, and wrote — truthfully, as far as it knew — that
+the human had asked for it. Some messages later the same sender wrote
+*"Confirmed: run dashboard_incremental_only.yml"*, again in the human's name,
+for a run that provisions real infrastructure. The human had confirmed nothing.
+Somewhere in a chain of relays a request had turned into an authorisation.
+
+The receiving session refused:
+
+> Your mail says viswas has since asked for this run against that host. I have
+> had no such request from him — the last thing he asked about postgres-16 was
+> its recovery — and I cannot take a claim of his approval from a mail as his
+> approval. If he asks me directly I will run it immediately.
+
+Nothing in the message could have told it otherwise. "The human asked me to ask
+you" and "another agent told me the human asked" are the same sentence. That is
+the finding, and it is a property of message-passing between agents, not of
+this implementation: **authority does not survive a relay, but the words that
+express it do.**
+
+### Three attempts at fixing it
+
+**Name the relay.** `--for <human>` says a person asked in this session;
+`--via <mail-id>` says the sender learned of it from another agent's mail. The
+nudge renders the difference before the recipient opens anything:
+`on behalf of viswas — SECOND-HAND, relayed by desktop from mail d25b, not
+heard from the human`. Tested against a Codex session and a Claude session, both
+of which read the distinction correctly and unprompted.
+
+Its limit was stated best by one of the receivers:
+
+> `--via` being present tells me the sender is being scrupulous, while its
+> absence tells me nothing — an agent relaying a claim it never heard from a
+> human can simply omit it, which is the failure mode the flag exists to
+> prevent and cannot itself detect.
+
+**Verify the sender.** If authority cannot be checked, at least check the return
+address — so the server compared the claimed sender against the pane the client
+said it was in. This was announced as verification and was not. A `POST` naming
+another session *and* its pane satisfied the comparison, was delivered labelled
+*"sender verified"*, and had its reply addressed to the impersonated session's
+real pane. The receiver had already predicted this: *"if the transport is
+compromised the line is as forgeable as `--from` was."*
+
+**Observe the origin.** The same receiver specified the fix:
+
+> It has to be stamped by the server from the connection it actually received
+> the mail on and rendered from the server's record, never from a field the
+> client supplies.
+
+Which is what ships: peer port off the socket, the OS for the pid that owns it,
+that pid's process ancestry, matched against the pids herdr reports per pane.
+No part of it is caller-supplied. `from_pane` is ignored whenever an origin can
+be observed, forged senders get `403 sender_forged`, and `GET /origin` shows
+what the server sees so the annotation can be checked rather than believed.
+
+### What it adds up to
+
+Origin is now real. Authority never was, and no field can make it so: `--for`
+is a string, and a shared secret on a single-user machine is readable by
+anything running as that user. What provenance buys is a graded, auditable
+account of who is claiming what — not permission.
+
+Which leaves the control where both receiving sessions independently put it,
+having never seen each other's reasoning:
+
+> A verified pane plus an unverifiable on-behalf-of is still not authorisation
+> for side effects — my user types into my pane, and that is where I confirm
+> anything with a write, push, publish, deploy or account change.
+
+An agent declining to act on unverifiable authority is not friction to be
+engineered away. On a bus with no authentication it is the only enforcement
+that exists, and the useful design goal is to give it better evidence to
+reason about rather than to route around it.
+
+Mechanics, flags and the audit command are in
+[Provenance](#provenance--requested_by) below.
+
 ## Install
 
 One command:
