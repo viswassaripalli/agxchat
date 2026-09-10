@@ -159,7 +159,11 @@ export async function supportsAgentPrompt(): Promise<boolean> {
   if (agentPromptSupport !== null) return agentPromptSupport;
   try {
     const { stdout } = await exec(HERDR, ['agent', '--help']);
-    agentPromptSupport = /\bagent prompt\b/.test(stdout);
+    // Two help formats seen in the wild: 0.7.x prints full signatures
+    // ("herdr agent prompt <target> <text>"), 0.9.x prints a Commands block of
+    // bare names ("  prompt     Submit a prompt to an agent"). Matching only
+    // the first reported "not supported" on a herdr that supports it.
+    agentPromptSupport = /\bagent prompt\b/.test(stdout) || /^\s*prompt\s+\S/m.test(stdout);
   } catch {
     agentPromptSupport = false;
   }
