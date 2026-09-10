@@ -18,6 +18,7 @@ import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { listAgents, nudge, sendKeys, readPane, explainAgent, herdrVersion, type HerdrAgent } from './herdr.ts';
+import { originPane } from './origin.ts';
 import { createEventBus, startAgentPoll, type MailEvent } from './mail-events.ts';
 
 const PORT = Number(process.env.AGX_PORT ?? process.env.HERDR_MAIL_PORT ?? 7777);
@@ -120,6 +121,13 @@ type Mail = {
    * mistake, such as a stale --from.
    */
   senderConsistent: boolean | null;
+  /**
+   * true when the sending pane was derived from the connection (peer pid →
+   * process ancestry → herdr's pane pids) rather than taken from a field the
+   * client supplied. This is the only part of provenance that is actually
+   * checked; everything else remains the sender's own account.
+   */
+  senderObserved: boolean;
   /** Deliver here if it is still alive, ahead of resolving the name. */
   preferPaneId: string | null;
   nudgedAt: number | null;
@@ -431,8 +439,9 @@ function nudgeText(m: Mail): string {
   // that is never more than a claim.
   // Deliberately not the word "verified": the pane id is self-reported, so
   // this is the sender's own account of itself agreeing with itself.
-  const sender =
-    m.senderConsistent === true
+  const sender = m.senderObserved
+    ? ` (origin pane ${m.fromPaneId} — observed by the server from the connection, not claimed)`
+    : m.senderConsistent === true
       ? ` (sender self-reports pane ${m.fromPaneId}; NOT verified — forgeable)`
       : m.senderConsistent === false
         ? ' (sender name overridden — inconsistent with its pane)'
@@ -899,6 +908,7 @@ function buildMcpServer(identity: string | null) {
         via: via ?? null,
         fromPaneId: null, // MCP carries no pane; the CLI supplies it
         senderConsistent: null,
+        senderObserved: false,
         preferPaneId: null,
         nudgedAt: null,
         engagedAt: null,
@@ -1012,6 +1022,7 @@ function buildMcpServer(identity: string | null) {
         via: orig.via,
         fromPaneId: null,
         senderConsistent: null,
+        senderObserved: false,
         preferPaneId: orig.fromPaneId,
         nudgedAt: null,
         engagedAt: null,
@@ -1261,8 +1272,30 @@ app.post('/mail', async (req, res) => {
   // reports the pane it runs in, and the server knows which identity owns that
   // pane. A receiver told mail came from "ui" can now rely on that much, even
   // though "a human asked for it" remains hearsay.
+  // Where the request physically came from. Derived from the connection and
+  // the OS process tree, so unlike from_pane the caller cannot choose it.
+  const observedPane = await originPane(
+    req.socket.remotePort,
+    agents.map((a) => a.paneId).filter((x): x is string => Boolean(x)),
+  );
+
   let senderConsistent: boolean | null = null;
-  if (m_fromPane) {
+  if (observedPane) {
+    const ids = await paneIdentities(agents);
+    const owner = ids.get(observedPane)?.name;
+    if (owner && key(owner) !== key(String(from)) && process.env.AGX_ALLOW_SENDER_OVERRIDE !== '1') {
+      return res.status(403).json({
+        error: 'sender_forged',
+        claimed: from,
+        observed_pane: observedPane,
+        observed_identity: owner,
+        hint:
+          `this request came from pane ${observedPane}, which is "${owner}". The sender name and any from_pane ` +
+          'you supplied were ignored — origin is taken from the connection.',
+      });
+    }
+    senderConsistent = true;
+  } else if (m_fromPane) {
     const ids = await paneIdentities(agents);
     const owner = ids.get(m_fromPane)?.name;
     senderConsistent = owner ? key(owner) === key(String(from)) : null;
@@ -1290,8 +1323,10 @@ app.post('/mail', async (req, res) => {
       ? req.body.requested_by.trim()
       : null,
     via: typeof req.body?.via === 'string' && req.body.via.trim() ? req.body.via.trim() : null,
-    fromPaneId: m_fromPane,
+    // Prefer what was observed over what was claimed.
+    fromPaneId: observedPane ?? m_fromPane,
     senderConsistent,
+    senderObserved: Boolean(observedPane),
     preferPaneId: null,
     nudgedAt: null, engagedAt: null, confirmedAt: null,
   };
@@ -1330,7 +1365,7 @@ app.post('/reply', async (req, res) => {
     subject: `re: ${orig.subject}`, body, pointers, expect: null, replyTo: orig.id, data,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
-    via: orig.via, fromPaneId: null, senderConsistent: null, preferPaneId: orig.fromPaneId,
+    via: orig.via, fromPaneId: null, senderConsistent: null, senderObserved: false, preferPaneId: orig.fromPaneId,
     nudgedAt: null, engagedAt: null, confirmedAt: null,
   };
   mail.set(reply.id, reply);
@@ -1348,6 +1383,21 @@ app.post('/reply', async (req, res) => {
  * unauthenticated bus has.
  */
 /** Who the server thinks the caller is, and which panes share that identity. */
+/** What the server observes about the caller, independent of what it claims. */
+app.get('/origin', async (req, res) => {
+  const agents = await listAgents(false);
+  const observed = await originPane(
+    req.socket.remotePort,
+    agents.map((a) => a.paneId).filter((x): x is string => Boolean(x)),
+  );
+  const ids = await paneIdentities(agents);
+  res.json({
+    observed_pane: observed,
+    observed_identity: observed ? (ids.get(observed)?.name ?? null) : null,
+    method: observed ? 'peer pid -> process ancestry -> herdr pane pids' : 'not determinable (no lsof match)',
+  });
+});
+
 app.get('/whoami', async (req, res) => {
   const agents = await listAgents(false);
   const identities = await paneIdentities(agents);
