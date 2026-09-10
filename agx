@@ -13,6 +13,32 @@
 set -euo pipefail
 jq_or_cat() { python3 -m json.tool 2>/dev/null || cat; }
 
+# Every response goes through here so an error body is reported as the server
+# worded it. Without this a 401 reached a parser expecting mail and came out as
+# a traceback, which tells the user nothing about the token.
+api() {
+  local path="$1"; shift
+  local body code
+  body="$(curl -s --max-time 10 -w '\n%{http_code}' "${AUTH[@]}" "$@" "$BASE$path" 2>/dev/null || true)"
+  code="$(printf '%s' "$body" | tail -n1)"
+  body="$(printf '%s' "$body" | sed '$d')"
+  case "$code" in
+    200|201) printf '%s' "$body"; return 0 ;;
+    ""|000) echo "agx: server not answering on $BASE — start it with: agx serve" >&2; return 1 ;;
+    401) echo "agx: unauthorized — token missing or stale (see $HOME_DIR/.run/token)" >&2; return 1 ;;
+    *)
+      printf '%s' "$body" | python3 -c "
+import json,sys
+try:
+    d=json.load(sys.stdin)
+    print('agx: ' + str(d.get('error') or d) + (' — ' + d['hint'] if d.get('hint') else ''), file=sys.stderr)
+except Exception:
+    print('agx: server returned HTTP $code', file=sys.stderr)
+" 2>/dev/null || echo "agx: server returned HTTP $code" >&2
+      return 1 ;;
+  esac
+}
+
 # Shared secret, written by the server on first start. Every request carries
 # it; without it the server answers 401 and nothing can type into your panes.
 agx_token() {
@@ -64,25 +90,54 @@ while [ $# -gt 0 ]; do
   esac
 done
 set -- "${ARGS[@]}"
+# Why this is careful: identity is what routing and reply-delivery hang off. A
+# wrong sender means replies are addressed to a mailbox nobody reads, and the
+# server treats an unresolvable sender as "reads via API" and never nudges. So
+# each failure is named, and commands that write refuse rather than guess.
+IDENTITY_PROBLEM=""
 if [ -z "$FROM" ]; then
   # Identity is per pane, not per directory: two terminals in one repo are two
   # mailboxes. The server owns that mapping, so ask it about THIS pane.
   MY_PANE="$(my_pane)"
-  if [ -n "$MY_PANE" ]; then
-    FROM="$(curl -s --max-time 2 "${AUTH[@]}" "$BASE/whoami?pane=$MY_PANE" 2>/dev/null | python3 -c "
+  if [ -z "$MY_PANE" ]; then
+    IDENTITY_PROBLEM="not running inside a herdr pane (no HERDR_PANE_ID, and 'herdr pane current' gave nothing)"
+  else
+    WHOAMI_BODY="$(curl -s --max-time 2 -w '\n%{http_code}' "${AUTH[@]}" "$BASE/whoami?pane=$MY_PANE" 2>/dev/null || true)"
+    WHOAMI_CODE="$(printf '%s' "$WHOAMI_BODY" | tail -n1)"
+    case "$WHOAMI_CODE" in
+      200)
+        FROM="$(printf '%s' "$WHOAMI_BODY" | sed '$d' | python3 -c "
 import json,sys
 try: print(json.load(sys.stdin).get('identity') or '')
 except Exception: pass
 " 2>/dev/null || true)"
-  fi
-  if [ -z "$FROM" ]; then
-    ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
-    FROM="$(basename "$ROOT")"
-    # Identity is what routing and reply-delivery hang off, so guessing it from
-    # the directory is worth a warning rather than a silent wrong answer.
-    echo "agx: could not ask the server who this pane is; falling back to \"$FROM\" (server down, or token missing/stale)" >&2
+        [ -z "$FROM" ] && IDENTITY_PROBLEM="the server does not recognise pane $MY_PANE as a live agent"
+        ;;
+      401) IDENTITY_PROBLEM="the server rejected our token — check $HOME_DIR/.run/token, or restart with: agx stop && agx serve" ;;
+      ""|000) IDENTITY_PROBLEM="the server is not answering on $BASE — start it with: agx serve" ;;
+      *)   IDENTITY_PROBLEM="the server answered HTTP $WHOAMI_CODE for /whoami" ;;
+    esac
   fi
 fi
+
+# Commands that create mail must have a real identity; read-only ones may
+# proceed without, since nothing routes back to them.
+case "${1:-}" in
+  send|reply)
+    if [ -z "$FROM" ]; then
+      echo "agx: refusing to $1 without a resolved identity — $IDENTITY_PROBLEM" >&2
+      echo "     mail from a guessed sender gets replies nobody reads. Pass --from <name> to override." >&2
+      exit 1
+    fi
+    ;;
+  *)
+    if [ -z "$FROM" ]; then
+      ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+      FROM="$(basename "$ROOT")"
+      [ -n "$IDENTITY_PROBLEM" ] && echo "agx: using \"$FROM\" as a placeholder identity — $IDENTITY_PROBLEM" >&2
+    fi
+    ;;
+esac
 INLINE="${INLINE:-1}"
 EXPECT="${EXPECT:-}"
 REQUESTED_BY="${REQUESTED_BY:-${AGX_FOR:-${HERDR_MAIL_FOR:-}}}"
@@ -118,7 +173,7 @@ case "$CMD" in
     ;;
   status)
     running || { echo "server: down (agx serve)"; exit 1; }
-    curl -s "${AUTH[@]}" "$BASE/health" | python3 -m json.tool
+    api /health | python3 -m json.tool
     ;;
   chat)
     # --space puts the chat view in its own herdr workspace instead of a split.
@@ -194,7 +249,7 @@ print(
     (cd "$HOME_DIR" && ./bootstrap.sh "$@")
     ;;
   agents)
-    curl -s "${AUTH[@]}" "$BASE/agents" | python3 -c "
+    api /agents | python3 -c "
 import json,sys
 for a in json.load(sys.stdin)['agents']:
     t=' '.join(a['topics']) or '-'
@@ -225,7 +280,7 @@ except urllib.error.HTTPError as e:
     ;;
   inbox)
     WHO="${1:-$FROM}"
-    curl -s "${AUTH[@]}" "$BASE/mail?to=$WHO" | python3 -c "
+    api "/mail?to=$WHO" | python3 -c "
 import json,sys
 ms=json.load(sys.stdin)['mail']
 if not ms: print('inbox empty'); raise SystemExit
@@ -376,10 +431,10 @@ EOF
     esac
     ;;
   whoami)
-    curl -s "${AUTH[@]}" "$BASE/whoami?pane=$(my_pane)" | jq_or_cat
+    api "/whoami?pane=$(my_pane)" | jq_or_cat
     ;;
   provenance)
-    curl -s "${AUTH[@]}" "$BASE/provenance" | python3 -c "
+    api /provenance | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 if not d['claims']: print('no claims of human authority'); raise SystemExit
@@ -390,7 +445,7 @@ print()
 print('second-hand claims:', d['second_hand'], '| dangling via refs:', d['dangling'] or 'none')"
     ;;
   deleted)
-    curl -s "${AUTH[@]}" "$BASE/deleted" | python3 -c "
+    api /deleted | python3 -c "
 import json,sys
 ds=json.load(sys.stdin)['deleted']
 if not ds: print('nothing deleted'); raise SystemExit
@@ -417,7 +472,7 @@ for d in ds: print(f\"{d['id']} {d['from']:9}-> {d['to']:9} {d['subject'][:56]}\
     ;;
   thread)
     ID="${1:?usage: mail thread <mail-id>}"
-    curl -s "${AUTH[@]}" "$BASE/mail" | python3 -c "
+    api /mail | python3 -c "
 import json,sys
 ms=json.load(sys.stdin)['mail']; want=sys.argv[1]
 ids={want} | {m['id'] for m in ms if m.get('replyTo')==want}
