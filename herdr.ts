@@ -170,7 +170,15 @@ export async function supportsAgentPrompt(): Promise<boolean> {
   return agentPromptSupport;
 }
 
-export async function nudge(paneId: string, text: string): Promise<void> {
+export type NudgeResult = {
+  /** How the text was delivered. */
+  via: 'agent-prompt' | 'typed';
+  /** True only when herdr confirmed the agent took the prompt up. */
+  confirmed: boolean;
+  detail?: string;
+};
+
+export async function nudge(paneId: string, text: string): Promise<NudgeResult> {
   // Test affordance: exercise routing and the wait guards without writing into
   // a live agent's TTY.
   if (process.env.AGX_DRY_NUDGE ?? process.env.HERDR_MAIL_DRY_NUDGE === '1') {
@@ -182,15 +190,35 @@ export async function nudge(paneId: string, text: string): Promise<void> {
   // knows when the text was accepted. Our send-text + Enter + read-back dance
   // exists only because 0.7.1 has no such command.
   if ((process.env.AGX_FORCE_TTY_NUDGE ?? '0') !== '1' && (await supportsAgentPrompt())) {
-    await exec(HERDR, ['agent', 'prompt', paneId, text]);
-    return;
+    // --wait --until working turns delivery from "we typed it" into "herdr saw
+    // the agent take it up". An agent that answers instantly may pass through
+    // working before we look, so `done` and `blocked` also count as evidence
+    // it was received; only a timeout means nothing happened.
+    const timeout = String(Number(process.env.AGX_CONFIRM_MS ?? 8000));
+    try {
+      await exec(HERDR, [
+        'agent', 'prompt', paneId, text,
+        '--wait', '--until', 'working', '--until', 'done', '--until', 'blocked',
+        '--timeout', timeout,
+      ]);
+      return { via: 'agent-prompt', confirmed: true };
+    } catch (err) {
+      // The prompt was still submitted; only the confirmation timed out.
+      return {
+        via: 'agent-prompt',
+        confirmed: false,
+        detail: `submitted, but the agent did not react within ${timeout}ms`,
+      };
+    }
   }
 
   await exec(HERDR, ['pane', 'send-text', paneId, text]);
   await sleep(250);
   await exec(HERDR, ['pane', 'send-keys', paneId, 'enter']);
 
-  if (process.env.AGX_NUDGE_VERIFY ?? process.env.HERDR_MAIL_NUDGE_VERIFY === '0') return;
+  if (process.env.AGX_NUDGE_VERIFY ?? process.env.HERDR_MAIL_NUDGE_VERIFY === '0') {
+    return { via: 'typed', confirmed: false, detail: 'verification disabled' };
+  }
 
   // The tail of the nudge is a stable needle: if it is still on screen next to
   // the prompt marker, the submit did not take.
@@ -199,9 +227,10 @@ export async function nudge(paneId: string, text: string): Promise<void> {
     await sleep(1200);
     const screen = await readPane(paneId, 12).catch(() => '');
     const stuck = screen.includes(needle) && /❯[^\n]*\S/.test(screen);
-    if (!stuck) return;
+    if (!stuck) return { via: 'typed', confirmed: true };
     await exec(HERDR, ['pane', 'send-keys', paneId, 'enter']);
   }
+  return { via: 'typed', confirmed: false, detail: 'text still sitting in the prompt after two submits' };
 }
 
 export async function sendKeys(paneId: string, keys: string[]): Promise<void> {

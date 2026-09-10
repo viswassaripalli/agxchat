@@ -12,11 +12,23 @@
 import React, { useEffect, useMemo, useState } from 'react';
 import { render, Box, Text, useApp, useInput, useStdout } from 'ink';
 import WebSocket from 'ws';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
 
 const PORT = Number(process.env.AGX_PORT ?? process.env.HERDR_MAIL_PORT ?? 7777);
 const BASE = `http://127.0.0.1:${PORT}`;
 /** Whose name reads as "us" in a thread header. */
 const ME = (process.env.AGX_ME ?? process.env.HERDR_MAIL_ME ?? 'desktop').toLowerCase();
+/** Same shared secret the CLI uses; the event stream carries whole messages. */
+const TOKEN = (() => {
+  if (process.env.AGX_TOKEN) return process.env.AGX_TOKEN;
+  try {
+    return readFileSync(join(process.env.AGX_HOME ?? process.cwd(), '.run/token'), 'utf8').trim();
+  } catch {
+    return '';
+  }
+})();
+const AUTH = TOKEN ? { 'X-AGX-Token': TOKEN } : {};
 
 type Agent = {
   name: string | null;
@@ -253,7 +265,7 @@ function App() {
     let ws: WebSocket | null = null;
     let dead = false;
     const connect = () => {
-      ws = new WebSocket(`ws://127.0.0.1:${PORT}/events`);
+      ws = new WebSocket(`ws://127.0.0.1:${PORT}/events`, { headers: AUTH });
       ws.on('open', () => setConn('live'));
       ws.on('close', () => {
         setConn('down');
@@ -330,7 +342,7 @@ function App() {
     try {
       const r = await fetch(`${BASE}/mail`, {
         method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
+        headers: { 'Content-Type': 'application/json', ...AUTH },
         body: JSON.stringify({ from: ME, requested_by: process.env.AGX_FOR ?? process.env.HERDR_MAIL_FOR ?? undefined, ...draft }),
       });
       const j: any = await r.json();
@@ -345,7 +357,7 @@ function App() {
   /** Deletes the whole thread: a half-deleted exchange is worse than either. */
   const removeThread = async (t: Thread) => {
     try {
-      const r = await fetch(`${BASE}/thread/${encodeURIComponent(t.root.id)}`, { method: 'DELETE' });
+      const r = await fetch(`${BASE}/thread/${encodeURIComponent(t.root.id)}`, { method: 'DELETE', headers: AUTH });
       const j: any = await r.json();
       setNote(r.ok ? `deleted ${j.removed.length} message${j.removed.length === 1 ? '' : 's'}` : `delete failed: ${j.error}`);
     } catch (err) {
@@ -360,7 +372,7 @@ function App() {
     if (!name) return;
     void fetch(`${BASE}/agent/${encodeURIComponent(name)}/send-keys`, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
+      headers: { 'Content-Type': 'application/json', ...AUTH },
       body: JSON.stringify({ keys: ['esc'] }),
     })
       .then((r) => r.json())
@@ -420,7 +432,7 @@ function App() {
       return setMode('to');
     }
     if (input === 'r') {
-      void fetch(`${BASE}/reload-seed`, { method: 'POST' })
+      void fetch(`${BASE}/reload-seed`, { method: 'POST', headers: AUTH })
         .then((r) => r.json())
         .then((j: any) => setNote(`seed reloaded: ${j.loaded} sessions`))
         .catch((err) => setNote(`reload failed: ${String(err)}`));
