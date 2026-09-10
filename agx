@@ -204,6 +204,26 @@ for m in ms:
     if m['pointers']: print('   files:', ', '.join(m['pointers']))
     print()"
     ;;
+  rule)
+    # Installing the CLI is not enough: a session only reaches for AGxChat if
+    # its CLAUDE.md tells it to.
+    RULE_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
+    case "${1:-show}" in
+      show)
+        cat "$HOME_DIR/claude-rule.md"
+        echo
+        echo "# install into $RULE_FILE with:  agx rule install"
+        ;;
+      install)
+        python3 "$HOME_DIR/rule.py" install "$RULE_FILE" "$HOME_DIR/claude-rule.md"
+        echo "CLAUDE.md is read at session start — restart a session for it to take effect."
+        ;;
+      remove)
+        python3 "$HOME_DIR/rule.py" remove "$RULE_FILE"
+        ;;
+      *) echo "usage: agx rule install|remove|show" >&2; exit 2 ;;
+    esac
+    ;;
   whoami)
     curl -s "$BASE/whoami?pane=$(my_pane)" | jq_or_cat
     ;;

@@ -29,6 +29,7 @@ Then:
 
 ```bash
 $EDITOR ~/.agxchat/agents.json   # name your sessions and their repo paths
+agx rule install                 # teach your sessions to use it (see below)
 agx serve                        # start the server
 agx agents                       # who is live
 agx chat --space                 # chat view in its own herdr workspace
@@ -44,6 +45,31 @@ agx update
 Requires node 18+, git, and herdr on PATH. The installer clones to `~/.agxchat`,
 installs deps, and links `agx`. It never touches your repos; `agx bootstrap`
 does that, and only when you ask.
+
+### Teaching your sessions
+
+Installing the CLI is not enough. `agx` works the moment it is on PATH, but a
+session only *reaches for it* if something tells it to — otherwise "ask tests
+whether the suite is green" is just a sentence, and nothing gets sent.
+
+`agx rule install` appends a marked block to `~/.claude/CLAUDE.md`, backing the
+file up first and updating in place if the block is already there:
+
+```
+<!-- agxchat:begin -->
+# AGxChat - talking to other sessions
+...
+<!-- agxchat:end -->
+```
+
+`agx rule show` prints it without installing; `agx rule remove` takes it out
+again. The text lives in `claude-rule.md` in this repo, so you can read exactly
+what your sessions will be told before you install it. CLAUDE.md is read at
+session start, so restart a session for it to take effect.
+
+The alternative is the MCP path: `agx bootstrap --write` puts a `mail` server
+into each repo's `.mcp.json`, and the tools then appear in the session's tool
+list on their own — no CLAUDE.md edit, but it needs a restart per session too.
 
 ## Commands
 

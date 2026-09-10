@@ -55,15 +55,24 @@ if [ ! -f "$DIR/agents.json" ]; then
 fi
 
 VERSION="$(git -C "$DIR" rev-parse --short HEAD)"
+RULE_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
+RULE_STATE="not installed"
+grep -qF "<!-- agxchat:begin -->" "$RULE_FILE" 2>/dev/null && RULE_STATE="installed"
+
 cat <<EOF
 
 AGxChat installed at $DIR ($VERSION)
 
   1. edit the seed:   \$EDITOR $DIR/agents.json
-  2. start it:        agx serve
-  3. see who is live: agx agents
-  4. open the chat:   agx chat        (or: agx chat --space)
-  5. send something:  agx send <name> "<subject>" "<body>" --for "\$USER"
+  2. teach sessions:  agx rule install     (currently: $RULE_STATE)
+  3. start it:        agx serve
+  4. see who is live: agx agents
+  5. open the chat:   agx chat        (or: agx chat --space)
+  6. send something:  agx send <name> "<subject>" "<body>" --for "\$USER"
+
+Step 2 is not optional if you want to say "ask <name> ..." in plain words:
+the CLI works either way, but a session only reaches for it when its CLAUDE.md
+says to. \`agx rule show\` prints the block first; \`agx rule remove\` undoes it.
 
 Update later with:   agx update
 EOF
