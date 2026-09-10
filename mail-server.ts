@@ -21,6 +21,36 @@ import { listAgents, nudge, sendKeys, readPane, explainAgent, herdrVersion, type
 import { createEventBus, startAgentPoll, type MailEvent } from './mail-events.ts';
 
 const PORT = Number(process.env.AGX_PORT ?? process.env.HERDR_MAIL_PORT ?? 7777);
+
+/**
+ * Shared secret.
+ *
+ * Without it, any process that can reach the port can type text into panes
+ * holding shell access — a browser tab, a dependency's postinstall script,
+ * anything. The token does not make this safe to expose; it stops *incidental*
+ * local access, which is the realistic threat on a developer machine.
+ *
+ * Generated on first start into .run/token (0600). Clients read the same file.
+ * AGX_NO_AUTH=1 disables the check for anyone who wants the old behaviour.
+ */
+const TOKEN_FILE = process.env.AGX_TOKEN_FILE ?? '.run/token';
+const AUTH_DISABLED = process.env.AGX_NO_AUTH === '1';
+let TOKEN = '';
+
+async function loadOrCreateToken(): Promise<string> {
+  if (AUTH_DISABLED) return '';
+  if (process.env.AGX_TOKEN) return process.env.AGX_TOKEN;
+  try {
+    const existing = (await readFile(TOKEN_FILE, 'utf8')).trim();
+    if (existing) return existing;
+  } catch {
+    /* first run */
+  }
+  const fresh = randomBytes(24).toString('base64url');
+  await mkdir(TOKEN_FILE.replace(/\/[^/]+$/, ''), { recursive: true });
+  await writeFile(TOKEN_FILE, fresh + '\n', { mode: 0o600 });
+  return fresh;
+}
 const MAX_BODY = 2000;
 const MAX_WAIT_MS = 5 * 60 * 1000;
 
@@ -83,6 +113,13 @@ type Mail = {
   nudgedAt: number | null;
   /** Set when the target started working after the nudge: it picked this up. */
   engagedAt: number | null;
+  /**
+   * herdr confirmed the agent reacted to the prompt (0.9+ `--wait --until`).
+   * Delivery used to be fire-and-hope, with engagement inferred afterwards
+   * from a status poll; this is the agent actually taking it up, observed by
+   * the thing that owns the terminal.
+   */
+  confirmedAt: number | null;
 };
 
 type Session = {
@@ -405,10 +442,15 @@ function nudgeText(m: Mail): string {
 
 async function nudgeNow(m: Mail, paneId: string, status: string) {
   try {
-    await nudge(paneId, nudgeText(m));
+    const res = await nudge(paneId, nudgeText(m));
     m.delivery = m.inline ? 'nudged_inline' : 'nudged_idle';
-    m.deliveryDetail = `pane ${paneId} (${status})`;
     m.nudgedAt = Date.now();
+    if (res.confirmed) {
+      m.confirmedAt = m.nudgedAt;
+      m.deliveryDetail = `pane ${paneId} (${status}) — accepted by the agent`;
+    } else {
+      m.deliveryDetail = `pane ${paneId} (${status})${res.detail ? ` — ${res.detail}` : ''}`;
+    }
   } catch (err) {
     m.delivery = 'undeliverable';
     m.deliveryDetail = `nudge failed: ${String(err)}`;
@@ -478,7 +520,7 @@ async function checkStalls() {
     // Already-stalled mail is re-examined too: the reason is a live reading of
     // the pane, and a stale one outlives whatever it described.
     if (m.delivery !== 'nudged_idle' && m.delivery !== 'nudged_inline' && m.delivery !== 'stalled') return false;
-    if (m.readAt !== null || m.engagedAt !== null) return false;
+    if (m.readAt !== null || m.engagedAt !== null || m.confirmedAt !== null) return false;
     if (m.nudgedAt === null || now - m.nudgedAt <= STALL_MS) return false;
     // An inline reply carries its whole payload in the TTY and nothing answers
     // a reply, so it has no "read" and no "answered" signal to wait for. It is
@@ -835,6 +877,7 @@ function buildMcpServer(identity: string | null) {
         preferPaneId: null,
         nudgedAt: null,
         engagedAt: null,
+        confirmedAt: null,
       };
       mail.set(m.id, m);
       await persist(m);
@@ -946,6 +989,7 @@ function buildMcpServer(identity: string | null) {
         preferPaneId: orig.fromPaneId,
         nudgedAt: null,
         engagedAt: null,
+        confirmedAt: null,
       };
       mail.set(reply.id, reply);
       await persist(reply);
@@ -1083,6 +1127,21 @@ async function removeMail(ids: string[]) {
 const app = express();
 app.use(express.json({ limit: '4mb' }));
 
+/**
+ * Everything except /health needs the token. /health stays open because it is
+ * how scripts and the installer ask "is it up", and it exposes counts, not
+ * content or the ability to write into a terminal.
+ */
+app.use((req, res, next) => {
+  if (AUTH_DISABLED || req.path === '/health') return next();
+  const offered = req.header('X-AGX-Token') ?? (typeof req.query.token === 'string' ? req.query.token : '');
+  if (offered && offered === TOKEN) return next();
+  res.status(401).json({
+    error: 'unauthorized',
+    hint: 'send header X-AGX-Token. The CLI reads it from .run/token; for MCP put it in the headers block of .mcp.json (agx bootstrap --write does this).',
+  });
+});
+
 const identityOf = (req: express.Request) => {
   const h = req.header('X-Herdr-Agent');
   return h && h.trim() ? h.trim() : null;
@@ -1181,7 +1240,7 @@ app.post('/mail', async (req, res) => {
     via: typeof req.body?.via === 'string' && req.body.via.trim() ? req.body.via.trim() : null,
     fromPaneId: typeof req.body?.from_pane === 'string' && req.body.from_pane.trim() ? req.body.from_pane.trim() : null,
     preferPaneId: null,
-    nudgedAt: null, engagedAt: null,
+    nudgedAt: null, engagedAt: null, confirmedAt: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -1219,7 +1278,7 @@ app.post('/reply', async (req, res) => {
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
     via: orig.via, fromPaneId: null, preferPaneId: orig.fromPaneId,
-    nudgedAt: null, engagedAt: null,
+    nudgedAt: null, engagedAt: null, confirmedAt: null,
   };
   mail.set(reply.id, reply);
   await persist(reply);
@@ -1341,16 +1400,24 @@ app.post('/agent/:name/send-keys', async (req, res) => {
   }
 });
 
+TOKEN = await loadOrCreateToken();
+
 const httpServer = app.listen(PORT, '127.0.0.1', async () => {
   console.log(`AGxChat on http://127.0.0.1:${PORT}  (mcp: /mcp, events: ws://127.0.0.1:${PORT}/events)`);
   console.log(`herdr: ${await herdrVersion().catch(() => 'NOT FOUND on PATH')}`);
+  console.log(AUTH_DISABLED ? '  auth  DISABLED (AGX_NO_AUTH=1)' : `  auth  token in ${TOKEN_FILE}`);
   const store = await loadStore().catch((e) => ({ restored: 0, error: String(e) }));
   console.log(`  store ${STORE}: ${store.restored} mail restored${'error' in store ? ` (${store.error})` : ''}`);
   const seed = await loadSeed().catch((e) => ({ loaded: 0, path: 'agents.json', bound: [`seed failed: ${String(e)}`] }));
   for (const line of seed.bound) console.log(`  seed  ${line}`);
 });
 
-bus.attach(httpServer, '/events', snapshot);
+bus.attach(httpServer, '/events', snapshot, (req) => {
+  if (AUTH_DISABLED) return true;
+  const url = new URL(req.url ?? '/', 'http://127.0.0.1');
+  const offered = req.headers['x-agx-token'] ?? url.searchParams.get('token') ?? '';
+  return String(offered) === TOKEN;
+});
 startAgentPoll(bus, Number(process.env.AGX_POLL_MS ?? process.env.HERDR_MAIL_POLL_MS ?? 1000), () => mergedAgents());
 
 const stallTimer = setInterval(() => void checkStalls(), Math.max(5000, Math.floor(STALL_MS / 3)));

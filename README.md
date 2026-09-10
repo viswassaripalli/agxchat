@@ -206,9 +206,12 @@ answer) and **off** for the TUI and scripts (which read the mailbox instead).
 Delivery has two paths, chosen by asking the installed herdr what it can do
 rather than by trusting a version number:
 
-**Native (herdr 0.9+).** `herdr agent prompt <pane> <text>` submits the text
-itself. herdr owns the terminal, so it knows when the text was accepted, and
-none of the code below runs. This is the path on a current herdr.
+**Native (herdr 0.9+).** `herdr agent prompt <pane> <text> --wait --until
+working --until done --until blocked` submits the text *and waits for the agent
+to react*. Delivery therefore reports `accepted by the agent` rather than
+"we typed it and hope" — a confirmation from the process that owns the terminal.
+A timeout does not mean the prompt was lost, only unconfirmed, and it is
+recorded that way. `AGX_CONFIRM_MS` sets the window (default 8000).
 
 **Typed (herdr 0.7.x).** No such command exists there, so the text goes in as
 `pane send-text` followed by `pane send-keys enter`. That Enter was observed
@@ -259,17 +262,8 @@ nowhere, silently.
 
 So delivery is confirmed by inference, not by dialog text: a mail that was
 nudged, has neither been read, engaged with, nor answered after `AGX_STALL_MS`
-(default 60s), and whose target is **not** `working`, is flagged `stalled`.
-
-The *reason* comes from `herdr agent explain --json`, which reports
-`visible_blocker` and the id of the detection rule that matched
-(`bash_permission_prompt`, `mcp_elicitation_prompt`, `live_prompt_box`, …).
-herdr maintains that manifest per agent kind and refreshes it remotely, so it
-already knows what a Claude permission prompt and a Codex approval dialog look
-like, and keeps knowing when those UIs change. An earlier version guessed with
-a local regex and reported an idle pane as parked on a prompt because the word
-"allow" appeared in scrollback; that regex survives only as a fallback for
-herdr versions without `explain`.
+(default 60s), and whose target is **not** `working`, is flagged `stalled`. Pane
+text is read only to explain *why* (`looks parked on a prompt`), never to decide.
 A stalled target that starts working un-stalls itself. Nothing is ever re-nudged
 — a stalled agent needs a human, not more text. `GET /health` lists them.
 
@@ -390,23 +384,38 @@ describe your setup, a SQLite or file-based bus will serve you better.
 
 ## Security
 
-**Anything that can reach `127.0.0.1:7777` can type arbitrary text into any of
-your live agent panes.** Those panes hold sessions with file-write and shell
+### The token
+
+Every request needs `X-AGX-Token`. The server generates a secret on first start
+into `.run/token` (mode 0600); the CLI and TUI read the same file, and
+`agx bootstrap --write` copies it into each repo's `.mcp.json`. `GET /health`
+stays open, because it is how the installer and scripts ask "is it up" and it
+exposes counts rather than content. `AGX_NO_AUTH=1` restores the old open
+behaviour, and `AGX_TOKEN` overrides the file.
+
+This stops incidental local access — a browser tab, a script, a dependency's
+postinstall reaching localhost. It is not a security boundary against a
+determined local attacker: anything that can read your home directory can read
+the token file, and by design must be able to, since that is how the clients
+get it.
+
+### What remains true
+
+**Anything that can reach `127.0.0.1:7777` *with the token* can type arbitrary
+text into any of your live agent panes.** Those panes hold sessions with file-write and shell
 access, so the bus is a prompt-injection path into them, and by extension a
 local code-execution path. That is the headline risk, not a footnote.
 
-There is no authentication. A `POST /mail` from any process on the machine —
-any script, any dependency's postinstall, any browser page that can reach
-localhost — is delivered as a nudge into a real agent's terminal. `requested_by`
-is a self-asserted string and `via` only marks a relay as second-hand; neither
-is proof of anything, and an attacker fills them in as easily as an agent does.
+`requested_by` is a self-asserted string and `via` only marks a relay as
+second-hand; neither is proof of anything, and an attacker with the token fills
+them in as easily as an agent does.
 
-What is actually in place: the listener binds `127.0.0.1` only, mail bodies are
-capped, and payloads travel as file paths rather than inline content. What is
-not: any authentication, any authorisation, any rate limit, any audit of who
-opened the socket. Do not run this on a shared or multi-user machine, do not
-expose the port, and add a shared-secret header before it leaves your own
-laptop.
+What is in place: the listener binds `127.0.0.1` only, the token gates every
+route but `/health`, mail bodies are capped, and payloads travel as file paths
+rather than inline content. What is not: any authorisation (one token, no
+scopes, no per-agent identity), any rate limit, any audit of who opened the
+socket, and no protection at all from another process running as you. Do not
+run this on a shared or multi-user machine and do not expose the port.
 
 ## What is durable, and what is not
 
@@ -419,7 +428,7 @@ Precisely, because an earlier version of this file said both "the mailbox is a
 | Deletions | appended as a tombstone; replay drops the id | yes |
 | Session registry (names, topics, panes) | memory, rebuilt from `agents.json` at boot | rebuilt, not restored |
 | Wait graph (who is blocked on whom) | memory only | no — a blocking `mail_wait` dies with the process |
-| Read/engaged markers | in the message record, so persisted | yes |
+| Read / engaged / confirmed markers | in the message record, so persisted | yes |
 
 So: mail is durable, the coordination state around it is not. The weakness note
 claiming otherwise was written before the JSONL store existed and was left
@@ -445,7 +454,8 @@ only, which is the one operation that makes a delete unrecoverable.
   only a runtime. That prerequisite is self-inflicted by the delivery
   mechanism.
 - **Version-coupled.** See below.
-- **Localhost, unauthenticated** — see Security above.
+- **One shared token, no scopes.** Any client with it can address any pane as
+  any sender. See Security above.
 
 Not built (explicitly out of scope): the browser views, the herdr fork, team
 packaging.

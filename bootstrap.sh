@@ -41,7 +41,13 @@ for (const a of seed.agents ?? []) {
   const path = join(a.cwd, '.mcp.json');
   const existing = existsSync(path) ? JSON.parse(readFileSync(path, 'utf8')) : {};
   const servers = existing.mcpServers ?? (existing.mcpServers = {});
-  const desired = { type: 'http', url, headers: { 'X-Herdr-Agent': a.name } };
+  const token = (() => {
+    try { return require('node:fs').readFileSync(join(process.env.AGX_HOME || process.cwd(), '.run/token'), 'utf8').trim(); }
+    catch { return ''; }
+  })();
+  const headers = { 'X-Herdr-Agent': a.name };
+  if (token) headers['X-AGX-Token'] = token;
+  const desired = { type: 'http', url, headers };
   if (JSON.stringify(servers.mail) === JSON.stringify(desired)) { console.log(`  ok    ${a.name}: ${path} already correct`); continue; }
   servers.mail = desired;
   if (!write) { console.log(`  WOULD ${a.name}: add mail server to ${path} (X-Herdr-Agent: ${a.name})`); continue; }

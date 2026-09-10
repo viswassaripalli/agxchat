@@ -12,12 +12,21 @@
 # Put it on PATH once:  ln -s $HOME/agxchat/mail /usr/local/bin/agx
 set -euo pipefail
 jq_or_cat() { python3 -m json.tool 2>/dev/null || cat; }
+
+# Shared secret, written by the server on first start. Every request carries
+# it; without it the server answers 401 and nothing can type into your panes.
+agx_token() {
+  if [ -n "${AGX_TOKEN:-}" ]; then printf '%s' "$AGX_TOKEN"; return 0; fi
+  [ -f "$HOME_DIR/.run/token" ] && tr -d '\n' < "$HOME_DIR/.run/token"
+}
+
 PORT="${AGX_PORT:-${HERDR_MAIL_PORT:-7777}}"
 
 # Follow the symlink so `agx` works from any cwd and after `agx update`.
 SELF="${BASH_SOURCE[0]}"
 while [ -L "$SELF" ]; do SELF="$(readlink "$SELF")"; done
 HOME_DIR="${AGX_HOME:-$(cd "$(dirname "$SELF")" && pwd)}"
+AUTH=(-H "X-AGX-Token: $(agx_token 2>/dev/null || true)")
 BASE="http://127.0.0.1:$PORT"
 
 # Which pane this command is running in. Defined before first use: bash
@@ -60,7 +69,7 @@ if [ -z "$FROM" ]; then
   # mailboxes. The server owns that mapping, so ask it about THIS pane.
   MY_PANE="$(my_pane)"
   if [ -n "$MY_PANE" ]; then
-    FROM="$(curl -s --max-time 2 "$BASE/whoami?pane=$MY_PANE" 2>/dev/null | python3 -c "
+    FROM="$(curl -s --max-time 2 "${AUTH[@]}" "$BASE/whoami?pane=$MY_PANE" 2>/dev/null | python3 -c "
 import json,sys
 try: print(json.load(sys.stdin).get('identity') or '')
 except Exception: pass
@@ -69,6 +78,9 @@ except Exception: pass
   if [ -z "$FROM" ]; then
     ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
     FROM="$(basename "$ROOT")"
+    # Identity is what routing and reply-delivery hang off, so guessing it from
+    # the directory is worth a warning rather than a silent wrong answer.
+    echo "agx: could not ask the server who this pane is; falling back to \"$FROM\" (server down, or token missing/stale)" >&2
   fi
 fi
 INLINE="${INLINE:-1}"
@@ -106,7 +118,7 @@ case "$CMD" in
     ;;
   status)
     running || { echo "server: down (agx serve)"; exit 1; }
-    curl -s "$BASE/health" | python3 -m json.tool
+    curl -s "${AUTH[@]}" "$BASE/health" | python3 -m json.tool
     ;;
   chat)
     # --space puts the chat view in its own herdr workspace instead of a split.
@@ -182,7 +194,7 @@ print(
     (cd "$HOME_DIR" && ./bootstrap.sh "$@")
     ;;
   agents)
-    curl -s "$BASE/agents" | python3 -c "
+    curl -s "${AUTH[@]}" "$BASE/agents" | python3 -c "
 import json,sys
 for a in json.load(sys.stdin)['agents']:
     t=' '.join(a['topics']) or '-'
@@ -194,8 +206,8 @@ for a in json.load(sys.stdin)['agents']:
     BODY="$*"
     python3 -c "
 import json,sys,urllib.request
-frm,to,subject,body,inline,base,expect,requested_by,via,from_pane,thread = sys.argv[1:12]
-pointers=[p for p in sys.argv[12:] if p]
+frm,to,subject,body,inline,base,expect,requested_by,via,from_pane,thread,token = sys.argv[1:13]
+pointers=[p for p in sys.argv[13:] if p]
 payload={'from':frm,'to':to,'subject':subject,'body':body,'inline':inline=='1'}
 if expect: payload['expect']=expect
 if requested_by: payload['requested_by']=requested_by
@@ -203,16 +215,17 @@ if via: payload['via']=via
 if from_pane: payload['from_pane']=from_pane
 if thread: payload['thread']=thread
 if pointers: payload['pointers']=pointers
-req=urllib.request.Request(base+'/mail',json.dumps(payload).encode(),{'Content-Type':'application/json'})
+req=urllib.request.Request(base+'/mail',json.dumps(payload).encode(),
+                           {'Content-Type':'application/json','X-AGX-Token':token})
 try:
     print(json.dumps(json.load(urllib.request.urlopen(req)),indent=2))
 except urllib.error.HTTPError as e:
     print(e.read().decode()); sys.exit(1)
-" "$FROM" "$TO" "$SUBJECT" "$BODY" "$INLINE" "$BASE" "$EXPECT" "$REQUESTED_BY" "$VIA" "$(my_pane)" "$THREAD" "${POINTERS[@]}"
+" "$FROM" "$TO" "$SUBJECT" "$BODY" "$INLINE" "$BASE" "$EXPECT" "$REQUESTED_BY" "$VIA" "$(my_pane)" "$THREAD" "$(agx_token)" "${POINTERS[@]}"
     ;;
   inbox)
     WHO="${1:-$FROM}"
-    curl -s "$BASE/mail?to=$WHO" | python3 -c "
+    curl -s "${AUTH[@]}" "$BASE/mail?to=$WHO" | python3 -c "
 import json,sys
 ms=json.load(sys.stdin)['mail']
 if not ms: print('inbox empty'); raise SystemExit
@@ -363,10 +376,10 @@ EOF
     esac
     ;;
   whoami)
-    curl -s "$BASE/whoami?pane=$(my_pane)" | jq_or_cat
+    curl -s "${AUTH[@]}" "$BASE/whoami?pane=$(my_pane)" | jq_or_cat
     ;;
   provenance)
-    curl -s "$BASE/provenance" | python3 -c "
+    curl -s "${AUTH[@]}" "$BASE/provenance" | python3 -c "
 import json,sys
 d=json.load(sys.stdin)
 if not d['claims']: print('no claims of human authority'); raise SystemExit
@@ -377,7 +390,7 @@ print()
 print('second-hand claims:', d['second_hand'], '| dangling via refs:', d['dangling'] or 'none')"
     ;;
   deleted)
-    curl -s "$BASE/deleted" | python3 -c "
+    curl -s "${AUTH[@]}" "$BASE/deleted" | python3 -c "
 import json,sys
 ds=json.load(sys.stdin)['deleted']
 if not ds: print('nothing deleted'); raise SystemExit
@@ -385,26 +398,26 @@ for d in ds: print(f\"{d['id']} {d['from']:9}-> {d['to']:9} {d['subject'][:56]}\
     ;;
   restore)
     ID="${1:?usage: agx restore <mail-id>}"
-    curl -s -X POST "$BASE/mail/$ID/restore" | jq_or_cat
+    curl -s "${AUTH[@]}" -X POST "$BASE/mail/$ID/restore" | jq_or_cat
     ;;
   delete)
     ID="${1:?usage: agx delete <mail-id>}"
-    curl -s -X DELETE "$BASE/mail/$ID" | jq_or_cat
+    curl -s "${AUTH[@]}" -X DELETE "$BASE/mail/$ID" | jq_or_cat
     ;;
   delete-thread)
     ID="${1:?usage: agx delete-thread <mail-id>}"
-    curl -s -X DELETE "$BASE/thread/$ID" | jq_or_cat
+    curl -s "${AUTH[@]}" -X DELETE "$BASE/thread/$ID" | jq_or_cat
     ;;
   clear)
     if [ "${1:-}" != "--yes" ]; then
       echo "this deletes every message and cannot be undone. re-run: agx clear --yes" >&2
       exit 1
     fi
-    curl -s -X DELETE "$BASE/mail?confirm=yes" | jq_or_cat
+    curl -s "${AUTH[@]}" -X DELETE "$BASE/mail?confirm=yes" | jq_or_cat
     ;;
   thread)
     ID="${1:?usage: mail thread <mail-id>}"
-    curl -s "$BASE/mail" | python3 -c "
+    curl -s "${AUTH[@]}" "$BASE/mail" | python3 -c "
 import json,sys
 ms=json.load(sys.stdin)['mail']; want=sys.argv[1]
 ids={want} | {m['id'] for m in ms if m.get('replyTo')==want}
@@ -418,12 +431,13 @@ for m in sorted((m for m in ms if m['id'] in ids), key=lambda m: m['createdAt'])
     python3 -c "
 import json,sys,urllib.request
 payload=json.dumps({'mail_id':sys.argv[1],'from':sys.argv[2],'body':sys.argv[3]}).encode()
-req=urllib.request.Request(sys.argv[4]+'/reply',payload,{'Content-Type':'application/json'})
+req=urllib.request.Request(sys.argv[4]+'/reply',payload,
+                           {'Content-Type':'application/json','X-AGX-Token':sys.argv[5]})
 try:
     print(json.dumps(json.load(urllib.request.urlopen(req)),indent=2))
 except urllib.error.HTTPError as e:
     print(e.read().decode()); sys.exit(1)
-" "$ID" "$FROM" "$BODY" "$BASE"
+" "$ID" "$FROM" "$BODY" "$BASE" "$(agx_token)"
     ;;
   *)
     sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'

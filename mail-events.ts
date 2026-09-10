@@ -28,7 +28,12 @@ export type EventBus = {
   emit(event: Omit<MailEvent, 'ts'> & { ts?: number }): void;
   /** In-process listeners. The server uses this to flush deferred mail on an idle transition. */
   subscribe(handler: (event: MailEvent) => void): () => void;
-  attach(server: Server, path: string, snapshot: () => Promise<MailEvent>): void;
+  attach(
+    server: Server,
+    path: string,
+    snapshot: () => Promise<MailEvent>,
+    authorize?: (req: import('node:http').IncomingMessage) => boolean,
+  ): void;
   clientCount(): number;
 };
 
@@ -57,9 +62,15 @@ export function createEventBus(): EventBus {
       return () => handlers.delete(handler);
     },
 
-    attach(server, path, snapshot) {
+    attach(server, path, snapshot, authorize) {
       const wss = new WebSocketServer({ server, path });
-      wss.on('connection', async (ws) => {
+      wss.on('connection', async (ws, req) => {
+        // The event stream carries every message body, so it is as sensitive
+        // as the REST API and gets the same check.
+        if (authorize && !authorize(req)) {
+          ws.close(1008, 'unauthorized');
+          return;
+        }
         clients.add(ws);
         ws.on('close', () => clients.delete(ws));
         ws.on('error', () => clients.delete(ws));
