@@ -191,6 +191,12 @@ function inboxOf(name: string): Mail[] {
  */
 async function resolvePane(session: Session | undefined, name: string, agents?: HerdrAgent[]) {
   const list = agents ?? (await listAgents(false));
+  const identities = await paneIdentities(list);
+  const byIdentity = [...identities.values()].find((i) => key(i.name) === key(name));
+  if (byIdentity) {
+    const hit = list.find((a) => a.paneId === byIdentity.paneId);
+    if (hit) return hit;
+  }
   if (session?.paneId) {
     const hit = list.find((a) => a.paneId === session.paneId);
     if (hit) return hit;
@@ -205,6 +211,47 @@ async function resolvePane(session: Session | undefined, name: string, agents?: 
   if (byRepo.length === 1) return byRepo[0];
   const byPane = list.find((a) => a.paneId === name);
   return byPane ?? null;
+}
+
+/**
+ * One identity per pane.
+ *
+ * Identity used to come from cwd alone, so every terminal open on a repo shared
+ * a name and therefore an inbox — two people's questions and answers landed in
+ * one pile. Now the canonical pane for a name keeps the plain name and every
+ * other pane on that cwd gets a `-p<n>` suffix, so `ui` and `ui-p4` are
+ * separate mailboxes that happen to sit in the same repo.
+ */
+async function paneIdentities(agents?: HerdrAgent[]) {
+  const list = agents ?? (await listAgents(false));
+  const out = new Map<string, { name: string; base: string; canonical: boolean; paneId: string }>();
+
+  const byCwd = new Map<string, HerdrAgent[]>();
+  for (const a of list) {
+    if (!a.paneId) continue;
+    const k = a.cwd ?? a.paneId;
+    byCwd.set(k, [...(byCwd.get(k) ?? []), a]);
+  }
+
+  for (const [cwd, panes] of byCwd) {
+    panes.sort((x, y) => (x.paneId! < y.paneId! ? -1 : 1));
+    const seeded = [...registry.values()].find((sn) => sn.cwd === cwd);
+    // The base name: a seeded name, else herdr's own agent name, else the repo.
+    const base = seeded?.name ?? panes[0].name ?? panes[0].repo ?? panes[0].paneId!;
+    // The canonical pane is the seeded one if it is still live, else the first.
+    const canonicalPane = panes.find((a) => a.paneId === seeded?.paneId)?.paneId ?? panes[0].paneId!;
+    for (const a of panes) {
+      const canonical = a.paneId === canonicalPane;
+      const suffix = a.paneId!.split(':')[1] ?? a.paneId!;
+      out.set(a.paneId!, {
+        name: canonical ? base : `${base}-${suffix}`,
+        base,
+        canonical,
+        paneId: a.paneId!,
+      });
+    }
+  }
+  return out;
 }
 
 type Resolution =
@@ -224,6 +271,10 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
 
   const herdrNamed = agents.filter((a) => a.name && key(a.name) === t);
   if (herdrNamed.length === 1) return { ok: true, name: herdrNamed[0].name!, via: 'name' };
+
+  const identities = await paneIdentities(agents);
+  const idHit = [...identities.values()].find((i) => key(i.name) === t);
+  if (idHit) return { ok: true, name: idHit.name, via: 'name' };
 
   const byTopic = [...registry.values()].filter((s) => s.topics.some((x) => key(x) === t));
   if (byTopic.length === 1) return { ok: true, name: byTopic[0].name, via: 'topic' };
@@ -448,9 +499,19 @@ async function deliver(m: Mail, opts: { silent?: boolean } = {}) {
 
 async function mergedAgents() {
   const agents = await listAgents();
+  const identities = await paneIdentities(agents);
   return agents.map((a) => {
-    const s = [...registry.values()].find((x) => x.paneId === a.paneId || (x.cwd && x.cwd === a.cwd));
-    return { ...a, name: s?.name ?? a.name ?? a.paneId, topics: s?.topics ?? [], registered: Boolean(s) };
+    const seeded = [...registry.values()].find((x) => x.paneId === a.paneId || (x.cwd && x.cwd === a.cwd));
+    const id = a.paneId ? identities.get(a.paneId) : undefined;
+    return {
+      ...a,
+      name: id?.name ?? seeded?.name ?? a.name ?? a.paneId,
+      // Topics belong to the canonical pane: "ask toolkit" must not fan out to
+      // every terminal that happens to be open on the toolkit repo.
+      topics: id?.canonical ? (seeded?.topics ?? []) : [],
+      canonical: id?.canonical ?? true,
+      registered: Boolean(seeded),
+    };
   });
 }
 
@@ -1032,22 +1093,27 @@ app.post('/reply', async (req, res) => {
 /** Who the server thinks the caller is, and which panes share that identity. */
 app.get('/whoami', async (req, res) => {
   const agents = await listAgents(false);
+  const identities = await paneIdentities(agents);
   const paneId = typeof req.query.pane === 'string' ? req.query.pane : null;
-  const me = paneId ? agents.find((a) => a.paneId === paneId) : null;
-  const name = typeof req.query.name === 'string' ? req.query.name : null;
-  const session = name ? registry.get(key(name)) : null;
-  const canonical = session ? await resolvePane(session, name!, agents) : null;
-  const siblings = me?.cwd ? agents.filter((a) => a.cwd === me.cwd).map((a) => a.paneId) : [];
+  const me = paneId ? identities.get(paneId) : null;
+  const mine = paneId ? agents.find((a) => a.paneId === paneId) : null;
+  const neighbours = mine?.cwd
+    ? agents
+        .filter((a) => a.cwd === mine.cwd && a.paneId !== paneId)
+        .map((a) => ({ pane: a.paneId, identity: identities.get(a.paneId!)?.name ?? null }))
+    : [];
   res.json({
-    name,
+    identity: me?.name ?? null,
     your_pane: paneId,
-    canonical_pane: canonical?.paneId ?? null,
-    is_canonical: Boolean(paneId && canonical?.paneId === paneId),
-    shared_identity_panes: siblings,
-    note:
-      siblings.length > 1
-        ? `${siblings.length} panes share this cwd and therefore this identity — they read each other's inbox. Replies to mail you send come back to your own pane.`
-        : undefined,
+    canonical: me?.canonical ?? null,
+    base_name: me?.base ?? null,
+    repo: mine?.repo ?? null,
+    others_in_this_repo: neighbours,
+    note: me
+      ? me.canonical
+        ? 'You hold the plain name for this repo, so mail addressed to it and to its topics comes to you.'
+        : `Your own mailbox is "${me.name}". Mail addressed to "${me.base}" goes to the canonical pane, not here.`
+      : 'No identity: this pane is not a live agent.',
   });
 });
 

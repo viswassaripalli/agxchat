@@ -11,6 +11,7 @@
 #
 # Put it on PATH once:  ln -s $HOME/agxchat/mail /usr/local/bin/agx
 set -euo pipefail
+jq_or_cat() { python3 -m json.tool 2>/dev/null || cat; }
 PORT="${AGX_PORT:-${HERDR_MAIL_PORT:-7777}}"
 
 # Follow the symlink so `agx` works from any cwd and after `agx update`.
@@ -36,17 +37,16 @@ while [ $# -gt 0 ]; do
 done
 set -- "${ARGS[@]}"
 if [ -z "$FROM" ]; then
-  # Ask the server who occupies this cwd, so the sender shows up as its
-  # registered name ("design") rather than its directory ("design-system").
-  FROM="$(curl -s --max-time 2 "$BASE/agents" 2>/dev/null | python3 -c "
-import json,sys,os
-try: agents=json.load(sys.stdin)['agents']
-except Exception: raise SystemExit
-cwd=os.getcwd()
-for a in agents:
-    if a.get('cwd') and (cwd==a['cwd'] or cwd.startswith(a['cwd']+'/')):
-        print(a['name'] or a['paneId']); break
+  # Identity is per pane, not per directory: two terminals in one repo are two
+  # mailboxes. The server owns that mapping, so ask it about THIS pane.
+  MY_PANE="$(my_pane)"
+  if [ -n "$MY_PANE" ]; then
+    FROM="$(curl -s --max-time 2 "$BASE/whoami?pane=$MY_PANE" 2>/dev/null | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin).get('identity') or '')
+except Exception: pass
 " 2>/dev/null || true)"
+  fi
   if [ -z "$FROM" ]; then
     ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
     FROM="$(basename "$ROOT")"
@@ -57,8 +57,6 @@ EXPECT="${EXPECT:-}"
 REQUESTED_BY="${REQUESTED_BY:-${AGX_FOR:-${HERDR_MAIL_FOR:-}}}"
 VIA="${VIA:-}"
 POINTERS=("${POINTERS[@]:-}")
-
-jq_or_cat() { python3 -m json.tool 2>/dev/null || cat; }
 
 # Which pane this command is running in. Several panes can share a cwd and
 # therefore an identity, so replies must come back to this one specifically.
@@ -167,7 +165,7 @@ for m in ms:
     print()"
     ;;
   whoami)
-    curl -s "$BASE/whoami?name=$FROM&pane=$(my_pane)" | jq_or_cat
+    curl -s "$BASE/whoami?pane=$(my_pane)" | jq_or_cat
     ;;
   provenance)
     curl -s "$BASE/provenance" | python3 -c "
