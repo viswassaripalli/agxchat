@@ -60,6 +60,27 @@ if [ ! -f "$DIR/agents.json" ]; then
   fi
 fi
 
+# Start it and open the chat space. An install you cannot see is an install you
+# have to be told how to finish; AGX_NO_START=1 skips this for scripted setups.
+if [ "${AGX_NO_START:-0}" != "1" ] && command -v herdr >/dev/null 2>&1; then
+  EXISTING=$(herdr workspace list 2>/dev/null | python3 -c "
+import json,sys
+try: ws = json.load(sys.stdin)['result']['workspaces']
+except Exception: ws = []
+print(next((w['workspace_id'] for w in ws if (w.get('label') or '').lower() == 'agxchat'), ''))
+" 2>/dev/null || true)
+  if [ -n "$EXISTING" ]; then
+    say "AGxChat workspace already open ($EXISTING)"
+  else
+    "$DIR/agx" serve >/dev/null 2>&1 || say "could not start the server — run: agx serve"
+    if "$DIR/agx" chat --space >/dev/null 2>&1; then
+      say "opened the AGxChat workspace"
+    else
+      say "could not open the chat workspace — run: agx chat --space"
+    fi
+  fi
+fi
+
 VERSION="$(git -C "$DIR" rev-parse --short HEAD)"
 RULE_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
 RULE_STATE="not installed"
@@ -69,12 +90,14 @@ cat <<EOF
 
 AGxChat installed at $DIR ($VERSION)
 
+The server is running and the AGxChat workspace is open.
+
   1. check the seed:  agx seed            (agx seed detect re-scans, edit opens it)
   2. teach sessions:  agx rule install     (currently: $RULE_STATE)
-  3. start it:        agx serve
-  4. see who is live: agx agents
-  5. open the chat:   agx chat        (or: agx chat --space)
-  6. send something:  agx send <name> "<subject>" "<body>" --for "\$USER"
+  3. see who is live: agx agents
+  4. send something:  agx send <name> "<subject>" "<body>" --for "\$USER"
+
+  remove it all:      agx uninstall --yes
 
 Step 2 is not optional if you want to say "ask <name> ..." in plain words:
 the CLI works either way, but a session only reaches for it when its CLAUDE.md

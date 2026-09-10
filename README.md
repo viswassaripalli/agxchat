@@ -25,14 +25,17 @@ tiny CLI; [herdr](https://github.com/herdrdev/herdr) carries only the wake-up.
 curl -fsSL https://raw.githubusercontent.com/viswassaripalli/agxchat/main/install.sh | bash
 ```
 
+That leaves the server running and the chat open in its own herdr workspace
+called **AGxChat** — an install you cannot see is an install you still have to
+be told how to finish. `AGX_NO_START=1` skips it for scripted setups, and
+`agx uninstall --yes` closes the workspace again.
+
 Then:
 
 ```bash
 agx seed                         # who is addressable (the installer detects this)
 agx rule install                 # teach your sessions to use it (see below)
-agx serve                        # start the server
 agx agents                       # who is live
-agx chat --space                 # chat view in its own herdr workspace
 agx send tests "Run the suite" "Against the staging fixture" --for "$USER"
 ```
 
