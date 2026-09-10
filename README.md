@@ -55,7 +55,20 @@ does that, and only when you ask.
 | `agx send <to> <subject> <body>` | `--for <human>` `--expect <shape>` `--pointer <path>` `--from <name>` |
 | `agx inbox [name]` / `thread <id>` / `reply <id> <body>` | read and answer |
 | `agx bootstrap [--write] [--tui]` | wire `.mcp.json` into your repos (dry run by default) |
+| `agx delete <id>` / `delete-thread <id>` / `clear --yes` | remove a message, a whole thread, or everything |
+| `agx deleted` / `restore <id>` | list what delete hid, bring one back |
 | `agx update` | pull, reinstall deps, restart the server |
+
+In the chat view, `d` deletes the selected thread after a `y` confirmation.
+
+### Delete is recoverable
+
+The store is append-only, so a delete appends a tombstone rather than rewriting
+the log: replay hides the record, it does not erase it. `agx deleted` reads the
+log directly (memory is where it is already gone) and `agx restore <id>`
+re-appends the original, which outranks its tombstone. Compaction is the one
+thing that makes a delete permanent — it rewrites the log from live records
+only, and runs once the log passes 5000 lines.
 
 ## Sending from another session
 

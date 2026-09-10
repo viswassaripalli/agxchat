@@ -152,6 +152,32 @@ for m in ms:
     if m['pointers']: print('   files:', ', '.join(m['pointers']))
     print()"
     ;;
+  deleted)
+    curl -s "$BASE/deleted" | python3 -c "
+import json,sys
+ds=json.load(sys.stdin)['deleted']
+if not ds: print('nothing deleted'); raise SystemExit
+for d in ds: print(f\"{d['id']} {d['from']:9}-> {d['to']:9} {d['subject'][:56]}\")"
+    ;;
+  restore)
+    ID="${1:?usage: agx restore <mail-id>}"
+    curl -s -X POST "$BASE/mail/$ID/restore" | jq_or_cat
+    ;;
+  delete)
+    ID="${1:?usage: agx delete <mail-id>}"
+    curl -s -X DELETE "$BASE/mail/$ID" | jq_or_cat
+    ;;
+  delete-thread)
+    ID="${1:?usage: agx delete-thread <mail-id>}"
+    curl -s -X DELETE "$BASE/thread/$ID" | jq_or_cat
+    ;;
+  clear)
+    if [ "${1:-}" != "--yes" ]; then
+      echo "this deletes every message and cannot be undone. re-run: agx clear --yes" >&2
+      exit 1
+    fi
+    curl -s -X DELETE "$BASE/mail?confirm=yes" | jq_or_cat
+    ;;
   thread)
     ID="${1:?usage: mail thread <mail-id>}"
     curl -s "$BASE/mail" | python3 -c "

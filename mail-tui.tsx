@@ -235,6 +235,7 @@ function App() {
   const [follow, setFollow] = useState(true);
   const [note, setNote] = useState<string | null>(null);
   const [mode, setMode] = useState<'browse' | 'to' | 'subject' | 'body'>('browse');
+  const [confirmDelete, setConfirmDelete] = useState<Thread | null>(null);
   const [draft, setDraft] = useState({ to: '', subject: '', body: '' });
   const [tick, setTick] = useState(0);
 
@@ -264,6 +265,9 @@ function App() {
           setAgents(ev.agents ?? []);
         } else if (ev.type === 'mail' || ev.type === 'reply') {
           setMail((ms) => [...ms.filter((x) => x.id !== ev.mail.id), ev.mail]);
+        } else if (ev.type === 'deleted') {
+          const gone = new Set<string>(ev.ids);
+          setMail((ms) => ms.filter((m) => !gone.has(m.id)));
         } else if (ev.type === 'delivery') {
           setMail((ms) =>
             ms.map((x) => (x.id === ev.id ? { ...x, delivery: ev.delivery, deliveryDetail: ev.detail ?? null } : x)),
@@ -311,6 +315,19 @@ function App() {
     setMode('browse');
   };
 
+  /** Deletes the whole thread: a half-deleted exchange is worse than either. */
+  const removeThread = async (t: Thread) => {
+    try {
+      const r = await fetch(`${BASE}/thread/${encodeURIComponent(t.root.id)}`, { method: 'DELETE' });
+      const j: any = await r.json();
+      setNote(r.ok ? `deleted ${j.removed.length} message${j.removed.length === 1 ? '' : 's'}` : `delete failed: ${j.error}`);
+    } catch (err) {
+      setNote(`delete failed: ${String(err)}`);
+    }
+    setConfirmDelete(null);
+    setCursor((c) => Math.max(0, c - 1));
+  };
+
   const unblock = () => {
     const name = selected ? (selected.b.toLowerCase() === ME ? selected.a : selected.b) : null;
     if (!name) return;
@@ -325,6 +342,10 @@ function App() {
   };
 
   useInput((input, key) => {
+    if (confirmDelete) {
+      if (input === 'y' || input === 'Y') return void removeThread(confirmDelete);
+      return setConfirmDelete(null);
+    }
     if (mode !== 'browse') {
       if (key.escape) {
         setMode('browse');
@@ -358,6 +379,10 @@ function App() {
     if (input === 'c') return setFullBodies((v) => !v);
     if (input === 'G') return setFollow((v) => !v);
     if (input === 'e') return unblock();
+    if (input === 'd') {
+      if (selected) setConfirmDelete(selected);
+      return;
+    }
     if (input === 'i') {
       const counterpart = selected ? (selected.b.toLowerCase() === ME ? selected.a : selected.b) : '';
       setDraft({ to: counterpart, subject: '', body: '' });
@@ -433,6 +458,19 @@ function App() {
         </Box>
       </Box>
 
+      {confirmDelete && (
+        <Box borderStyle="round" borderColor="red" paddingX={1}>
+          <Text>
+            <Text bold color="red">delete thread</Text>
+            <Text dimColor> · {confirmDelete.messages.length} message{confirmDelete.messages.length === 1 ? '' : 's'} · </Text>
+            <Text>{confirmDelete.subject}</Text>
+            <Text dimColor> — this cannot be undone. </Text>
+            <Text bold>y</Text>
+            <Text dimColor> to delete, any other key to cancel</Text>
+          </Text>
+        </Box>
+      )}
+
       {mode !== 'browse' && (
         <Box flexDirection="column" borderStyle="round" borderColor="magenta" paddingX={1}>
           <Text bold color="magenta">
@@ -460,7 +498,7 @@ function App() {
 
       <Text dimColor>
         {mode === 'browse'
-          ? 'j/k move · f filter · c bodies · i write · e unblock · G follow · r reload · q quit'
+          ? 'j/k move · f filter · c bodies · i write · d delete · e unblock · G follow · r reload · q quit'
           : 'typing…'}
       </Text>
     </Box>

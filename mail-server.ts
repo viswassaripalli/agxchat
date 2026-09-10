@@ -110,6 +110,19 @@ async function compactStore() {
   storeLines = mail.size;
 }
 
+/** A delete is recorded as a tombstone append, never a rewrite. */
+async function persistDelete(id: string) {
+  if (storeBroken) return;
+  try {
+    await mkdir(STORE.replace(/\/[^/]+$/, ''), { recursive: true });
+    await appendFile(STORE, JSON.stringify({ id, _deleted: true }) + '\n');
+    storeLines++;
+  } catch (err) {
+    storeBroken = true;
+    console.error(`mail store disabled: ${String(err)}`);
+  }
+}
+
 async function loadStore() {
   let raw: string;
   try {
@@ -122,8 +135,10 @@ async function loadStore() {
   let bad = 0;
   for (const line of lines) {
     try {
-      const m = JSON.parse(line) as Mail;
-      if (m?.id) mail.set(m.id, m); // last write wins
+      const m = JSON.parse(line) as Mail & { _deleted?: boolean };
+      if (!m?.id) continue;
+      if (m._deleted) mail.delete(m.id); // tombstone
+      else mail.set(m.id, m); // last write wins
     } catch {
       bad++;
     }
@@ -743,6 +758,62 @@ function buildMcpServer(identity: string | null) {
   return server;
 }
 
+/** Every message whose replyTo chain reaches `rootId`, plus the root itself. */
+function threadIds(rootId: string): string[] {
+  const rootOf = (m: Mail): string => {
+    let cur = m;
+    for (let hop = 0; hop < 20 && cur.replyTo; hop++) {
+      const parent = mail.get(cur.replyTo);
+      if (!parent) break;
+      cur = parent;
+    }
+    return cur.id;
+  };
+  return [...mail.values()].filter((m) => m.id === rootId || rootOf(m) === rootId).map((m) => m.id);
+}
+
+/**
+ * Deleted mail is recoverable because the store is append-only: a tombstone
+ * hides a record, it does not erase it. This reads the log directly rather
+ * than memory, which is the whole point — memory is where it is already gone.
+ */
+async function deletedMail(): Promise<Mail[]> {
+  let raw: string;
+  try {
+    raw = await readFile(STORE, 'utf8');
+  } catch {
+    return [];
+  }
+  const last = new Map<string, Mail>();
+  const tombed = new Set<string>();
+  for (const line of raw.split('\n').filter(Boolean)) {
+    try {
+      const r = JSON.parse(line) as Mail & { _deleted?: boolean };
+      if (!r?.id) continue;
+      if (r._deleted) tombed.add(r.id);
+      else {
+        last.set(r.id, r);
+        tombed.delete(r.id); // written again after a delete: live once more
+      }
+    } catch {
+      /* skip */
+    }
+  }
+  return [...tombed].map((id) => last.get(id)).filter((m): m is Mail => Boolean(m) && !mail.has(m!.id));
+}
+
+async function removeMail(ids: string[]) {
+  const removed: string[] = [];
+  for (const id of ids) {
+    if (!mail.has(id)) continue;
+    mail.delete(id);
+    await persistDelete(id);
+    removed.push(id);
+  }
+  if (removed.length) bus.emit({ type: 'deleted', ids: removed });
+  return removed;
+}
+
 // ─────────────────────────────── HTTP ───────────────────────────────
 
 const app = express();
@@ -859,6 +930,49 @@ app.post('/reply', async (req, res) => {
   const out = await deliver(reply, { silent: waiting });
   await persist(reply);
   res.json({ ok: true, id: reply.id, to: reply.to, delivery: out.delivery });
+});
+
+/** What a delete hid, and can be brought back. */
+app.get('/deleted', async (_req, res) => {
+  const items = await deletedMail();
+  res.json({ deleted: items.map((m) => ({ id: m.id, from: m.from, to: m.to, subject: m.subject, createdAt: m.createdAt })) });
+});
+
+/** Undo a delete: re-append the original record, which outranks its tombstone. */
+app.post('/mail/:id/restore', async (req, res) => {
+  const items = await deletedMail();
+  const found = items.find((m) => m.id === req.params.id);
+  if (!found) return res.status(404).json({ error: 'not_recoverable', id: req.params.id });
+  mail.set(found.id, found);
+  await persist(found);
+  bus.emit({ type: 'mail', mail: found });
+  res.json({ ok: true, restored: found.id, subject: found.subject });
+});
+
+/** Delete one message. */
+app.delete('/mail/:id', async (req, res) => {
+  const removed = await removeMail([req.params.id]);
+  if (!removed.length) return res.status(404).json({ error: 'unknown_mail', id: req.params.id });
+  res.json({ ok: true, removed });
+});
+
+/** Delete a whole thread — the root and every reply under it. */
+app.delete('/thread/:id', async (req, res) => {
+  if (!mail.has(req.params.id)) return res.status(404).json({ error: 'unknown_mail', id: req.params.id });
+  const removed = await removeMail(threadIds(req.params.id));
+  res.json({ ok: true, removed });
+});
+
+/**
+ * Clear the whole mailbox. Requires ?confirm=yes so a stray DELETE cannot wipe
+ * the history — the store is the only copy.
+ */
+app.delete('/mail', async (req, res) => {
+  if (req.query.confirm !== 'yes') {
+    return res.status(400).json({ error: 'confirm_required', hint: 'DELETE /mail?confirm=yes' });
+  }
+  const removed = await removeMail([...mail.keys()]);
+  res.json({ ok: true, removed: removed.length });
 });
 
 /** Powers the TUI's `e` key — the only thing in this design that can clear a blocked agent. */

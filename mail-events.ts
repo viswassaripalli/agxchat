@@ -21,6 +21,7 @@ export type MailEvent =
   | { type: 'mail'; ts: number; mail: unknown }
   | { type: 'delivery'; ts: number; id: string; to: string; delivery: string; detail?: string }
   | { type: 'reply'; ts: number; mail: unknown }
+  | { type: 'deleted'; ts: number; ids: string[] }
   | { type: 'error'; ts: number; message: string };
 
 export type EventBus = {
