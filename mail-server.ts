@@ -71,6 +71,15 @@ type Mail = {
    * localhost); a relayed one is weaker, and must not look identical.
    */
   via: string | null;
+  /**
+   * The pane the sender actually typed in. Several panes can share a cwd — and
+   * therefore an identity — so a name resolves to one canonical pane while the
+   * human may be sitting in a different one. Without this, you ask in one
+   * terminal of a space and the answer arrives in another.
+   */
+  fromPaneId: string | null;
+  /** Deliver here if it is still alive, ahead of resolving the name. */
+  preferPaneId: string | null;
   nudgedAt: number | null;
   /** Set when the target started working after the nudge: it picked this up. */
   engagedAt: number | null;
@@ -407,7 +416,10 @@ bus.subscribe((ev) => {
 async function deliver(m: Mail, opts: { silent?: boolean } = {}) {
   const agents = await listAgents(false);
   const session = registry.get(key(m.to));
-  const pane = await resolvePane(session, m.to, agents);
+  // A reply goes back to the terminal the question came from, not to whichever
+  // pane happens to be canonical for that name.
+  const preferred = m.preferPaneId ? agents.find((a) => a.paneId === m.preferPaneId) : null;
+  const pane = preferred ?? (await resolvePane(session, m.to, agents));
 
   m.targetPaneId = pane?.paneId ?? null;
 
@@ -618,6 +630,8 @@ function buildMcpServer(identity: string | null) {
         notify: true,
         requestedBy: requested_by ?? null,
         via: via ?? null,
+        fromPaneId: null, // MCP carries no pane; the CLI supplies it
+        preferPaneId: null,
         nudgedAt: null,
         engagedAt: null,
       };
@@ -726,6 +740,8 @@ function buildMcpServer(identity: string | null) {
         notify: orig.notify, // a TUI-only sender stays TUI-only for the reply
         requestedBy: orig.requestedBy,
         via: orig.via,
+        fromPaneId: null,
+        preferPaneId: orig.fromPaneId,
         nudgedAt: null,
         engagedAt: null,
       };
@@ -958,6 +974,8 @@ app.post('/mail', async (req, res) => {
       ? req.body.requested_by.trim()
       : null,
     via: typeof req.body?.via === 'string' && req.body.via.trim() ? req.body.via.trim() : null,
+    fromPaneId: typeof req.body?.from_pane === 'string' && req.body.from_pane.trim() ? req.body.from_pane.trim() : null,
+    preferPaneId: null,
     nudgedAt: null, engagedAt: null,
   };
   mail.set(m.id, m);
@@ -965,7 +983,16 @@ app.post('/mail', async (req, res) => {
   bus.emit({ type: 'mail', mail: m });
   const out = await deliver(m);
   await persist(m);
-  res.json({ id: m.id, to: m.to, delivery: out.delivery, detail: out.detail });
+  const senderCwd = m.fromPaneId ? agents.find((a) => a.paneId === m.fromPaneId)?.cwd : null;
+  const siblings = senderCwd ? agents.filter((a) => a.cwd === senderCwd).map((a) => a.paneId) : [];
+  res.json({
+    id: m.id,
+    to: m.to,
+    delivery: out.delivery,
+    detail: out.detail,
+    reply_lands_in: m.fromPaneId ?? 'the canonical pane for your name',
+    shared_identity_panes: siblings.length > 1 ? siblings : undefined,
+  });
 });
 
 /**
@@ -985,7 +1012,8 @@ app.post('/reply', async (req, res) => {
     subject: `re: ${orig.subject}`, body, pointers, expect: null, replyTo: orig.id, data,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
-    via: orig.via, nudgedAt: null, engagedAt: null,
+    via: orig.via, fromPaneId: null, preferPaneId: orig.fromPaneId,
+    nudgedAt: null, engagedAt: null,
   };
   mail.set(reply.id, reply);
   await persist(reply);
@@ -1001,6 +1029,28 @@ app.post('/reply', async (req, res) => {
  * fabricated one can be found after the fact — which is the only defence an
  * unauthenticated bus has.
  */
+/** Who the server thinks the caller is, and which panes share that identity. */
+app.get('/whoami', async (req, res) => {
+  const agents = await listAgents(false);
+  const paneId = typeof req.query.pane === 'string' ? req.query.pane : null;
+  const me = paneId ? agents.find((a) => a.paneId === paneId) : null;
+  const name = typeof req.query.name === 'string' ? req.query.name : null;
+  const session = name ? registry.get(key(name)) : null;
+  const canonical = session ? await resolvePane(session, name!, agents) : null;
+  const siblings = me?.cwd ? agents.filter((a) => a.cwd === me.cwd).map((a) => a.paneId) : [];
+  res.json({
+    name,
+    your_pane: paneId,
+    canonical_pane: canonical?.paneId ?? null,
+    is_canonical: Boolean(paneId && canonical?.paneId === paneId),
+    shared_identity_panes: siblings,
+    note:
+      siblings.length > 1
+        ? `${siblings.length} panes share this cwd and therefore this identity — they read each other's inbox. Replies to mail you send come back to your own pane.`
+        : undefined,
+  });
+});
+
 app.get('/provenance', (_req, res) => {
   const claims = [...mail.values()]
     .filter((m) => m.requestedBy)
