@@ -187,7 +187,14 @@ agx reply 68fb "Yes — StatusLabel."
 
 The sender is inferred by asking the server who occupies `$PWD`, so it shows up
 as its registered name (`design`), not its directory (`design-system`).
-Override with `--from`. Symlink it once to shorten:
+Override with `--from`.
+
+Identity resolution fails loudly, because a wrong sender is worse than no
+sender: the server treats an unresolvable one as "reads via API" and never
+nudges, so replies go to a mailbox nobody reads. `send` and `reply` refuse and
+name the cause — no herdr pane, stale token, server down, pane not recognised —
+rather than falling back to the directory name. Read-only commands proceed with
+a placeholder and say so. Symlink it once to shorten:
 
 ```bash
 ln -s agx /usr/local/bin/agx
