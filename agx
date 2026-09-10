@@ -146,12 +146,32 @@ print(
   update)
     git -C "$HOME_DIR" rev-parse --git-dir >/dev/null 2>&1 || { echo "$HOME_DIR is not a git clone" >&2; exit 1; }
     BEFORE=$(git -C "$HOME_DIR" rev-parse --short HEAD)
-    git -C "$HOME_DIR" pull --ff-only --quiet
+    if ! git -C "$HOME_DIR" pull --ff-only --quiet 2>/tmp/agx-pull-err; then
+      echo "pull failed:" >&2; cat /tmp/agx-pull-err >&2
+      if [ -n "$(git -C "$HOME_DIR" status --porcelain)" ]; then
+        echo >&2
+        echo "Local edits in $HOME_DIR are in the way. agents.json and .run/ are" >&2
+        echo "ignored and always safe; anything else you changed needs stashing:" >&2
+        echo "  git -C $HOME_DIR stash && agx update" >&2
+      fi
+      exit 1
+    fi
     AFTER=$(git -C "$HOME_DIR" rev-parse --short HEAD)
     if [ "$BEFORE" = "$AFTER" ]; then echo "already current ($AFTER)"; exit 0; fi
     (cd "$HOME_DIR" && npm install --silent --no-audit --no-fund)
     echo "updated $BEFORE -> $AFTER"
-    # The server holds all mail in memory; the JSONL store replays it on boot.
+
+    # Refresh the CLAUDE.md block IF it is already installed. An update should
+    # carry a changed rule to the sessions that opted in, and must never install
+    # one for someone who did not.
+    RULE_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
+    if grep -qF "<!-- agxchat:begin -->" "$RULE_FILE" 2>/dev/null; then
+      python3 "$HOME_DIR/rule.py" install "$RULE_FILE" "$HOME_DIR/claude-rule.md" >/dev/null \
+        && echo "refreshed the AGxChat block in $RULE_FILE (restart a session to pick it up)"
+    fi
+
+    # Your seed and mail survive: agents.json and .run/ are gitignored, and the
+    # server replays the JSONL store on boot.
     if running; then
       pkill -f "tsx mail-server.ts" 2>/dev/null || true
       sleep 1

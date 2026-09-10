@@ -42,6 +42,12 @@ Update in place — same command is safe to re-run, or:
 agx update
 ```
 
+`agx update` fast-forwards the clone, reinstalls dependencies, restarts the
+server if it was running, and refreshes the CLAUDE.md block **only if you
+already installed one**. Your `agents.json` and your mail survive: both are
+gitignored, and the server replays the message log on boot. If you edited the
+source yourself the pull stops and says so rather than clobbering your work.
+
 Requires node 18+, git, and herdr on PATH. The installer clones to `~/.agxchat`,
 installs deps, and links `agx`. It never touches your repos; `agx bootstrap`
 does that, and only when you ask.
