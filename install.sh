@@ -49,9 +49,15 @@ case ":$PATH:" in
   *) printf '\033[33m!\033[0m add it to PATH:  echo '"'"'export PATH="%s:$PATH"'"'"' >> ~/.zshrc\n' "$TARGET" ;;
 esac
 
+# Fill the seed in from the panes herdr can already see, rather than leaving
+# placeholder paths for someone to hand-edit.
 if [ ! -f "$DIR/agents.json" ]; then
-  cp "$DIR/agents.example.json" "$DIR/agents.json"
-  say "wrote $DIR/agents.json — edit it with your own repo paths"
+  if command -v herdr >/dev/null 2>&1 && python3 "$DIR/seed.py" detect "$DIR/agents.json" >/dev/null 2>&1; then
+    say "detected your sessions into $DIR/agents.json"
+  else
+    cp "$DIR/agents.example.json" "$DIR/agents.json"
+    say "wrote $DIR/agents.json — run 'agx seed detect' or edit it by hand"
+  fi
 fi
 
 VERSION="$(git -C "$DIR" rev-parse --short HEAD)"
@@ -63,7 +69,7 @@ cat <<EOF
 
 AGxChat installed at $DIR ($VERSION)
 
-  1. edit the seed:   \$EDITOR $DIR/agents.json
+  1. check the seed:  agx seed            (agx seed detect re-scans, edit opens it)
   2. teach sessions:  agx rule install     (currently: $RULE_STATE)
   3. start it:        agx serve
   4. see who is live: agx agents

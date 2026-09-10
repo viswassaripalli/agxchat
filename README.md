@@ -28,7 +28,7 @@ curl -fsSL https://raw.githubusercontent.com/viswassaripalli/agxchat/main/instal
 Then:
 
 ```bash
-$EDITOR ~/.agxchat/agents.json   # name your sessions and their repo paths
+agx seed                         # who is addressable (the installer detects this)
 agx rule install                 # teach your sessions to use it (see below)
 agx serve                        # start the server
 agx agents                       # who is live
@@ -235,7 +235,14 @@ Identity is a header in each repo's `.mcp.json`:
 } } }
 ```
 
-`agents.json` pre-seeds the registry so `to: "design"` resolves before that
+`agents.json` is written for you at install time from the panes herdr can see:
+one entry per repo, named after its git root, with topics derived from the
+name. `agx seed detect` re-scans, `agx seed preview` shows what it would write
+without touching the file, `agx seed edit` opens it in an editor that exists.
+Two worktrees of one repo would collide on the git-root name, so those are
+named after their parent directory instead.
+
+It pre-seeds the registry so `to: "design"` resolves before that
 session has ever called `mail_register` — without it, topic routing is dead
 until each session happens to register itself, which no session does unprompted.
 

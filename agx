@@ -224,6 +224,30 @@ for m in ms:
     if m['pointers']: print('   files:', ', '.join(m['pointers']))
     print()"
     ;;
+  seed)
+    SEED_FILE="$HOME_DIR/agents.json"
+    case "${1:-show}" in
+      detect)
+        python3 "$HOME_DIR/seed.py" detect "$SEED_FILE"
+        ;;
+      preview)
+        python3 "$HOME_DIR/seed.py" detect --print
+        ;;
+      edit)
+        # $EDITOR is often unset, and then `$EDITOR file` runs the file as a
+        # command. Fall back through the editors that are actually installed.
+        for ed in "${VISUAL:-}" "${EDITOR:-}" nano vim vi; do
+          [ -n "$ed" ] && command -v "$ed" >/dev/null 2>&1 && exec "$ed" "$SEED_FILE"
+        done
+        echo "no editor found; the file is at $SEED_FILE" >&2
+        exit 1
+        ;;
+      show)
+        cat "$SEED_FILE" 2>/dev/null || { echo "no seed yet; run: agx seed detect" >&2; exit 1; }
+        ;;
+      *) echo "usage: agx seed [detect|preview|edit|show]" >&2; exit 2 ;;
+    esac
+    ;;
   rule)
     # Installing the CLI is not enough: a session only reaches for AGxChat if
     # its CLAUDE.md tells it to.
