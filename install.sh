@@ -102,7 +102,8 @@ AGxChat is ready ($VERSION, at $DIR)
 
   · server running on http://127.0.0.1:7777
   · chat open in the AGxChat workspace
-  · $SEED_COUNT sessions addressable — agx agents
+  · $SEED_COUNT sessions addressable:
+$("$DIR/agx" agents 2>/dev/null | sed 's/^/      /' || echo '      (start the server and run: agx agents)')
   · your sessions told how to use it — restart one, then just say:
 
       ask <name> whether the build is green
