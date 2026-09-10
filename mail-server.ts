@@ -446,8 +446,19 @@ const STALL_MS = Number(process.env.AGX_STALL_MS ?? process.env.HERDR_MAIL_STALL
  * simply idle. A wrong reason is worse than no reason — it sends you to fix
  * something that is not broken.
  */
-const PERMISSION_MARKERS =
-  /need permission|do you want to (proceed|continue|allow)|requires approval|no, and tell claude|❯\s*1\.\s*yes/i;
+const PERMISSION_MARKERS = new RegExp(
+  [
+    'need permission',
+    'do you want to (proceed|continue|allow)',
+    'would you like to (make|apply|run)', // Codex edit approval
+    'requires approval',
+    'no, and tell \\w+ what to do', // "…tell Claude/Codex what to do differently"
+    "don't ask again",
+    '[❯›>]\\s*1\\.\\s*yes', // the first option of a numbered dialog, any marker glyph
+    'press enter to confirm',
+  ].join('|'),
+  'i',
+);
 /** Only the tail matters: scrollback holds every dialog you ever answered. */
 const PROMPT_TAIL_LINES = 8;
 
