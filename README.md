@@ -339,40 +339,28 @@ a session that has not wired up the mail MCP server yet. It breaks the
 payload-by-pointer rule on purpose and is the only mode that works with zero
 setup on the receiving side.
 
-## Prior art, and where this loses
+## Prior art
 
-This is a crowded problem. Everything below already does cross-agent messaging
-between Claude Code and Codex today:
+Local agent-to-agent messaging is well-trodden: several projects do it over
+SQLite, over MCP tools, or over a Maildir-style file queue, and Claude Code now
+messages its own sessions natively. Each of those asks only for a runtime.
 
-| | Transport | Prerequisites |
-| --- | --- | --- |
-| [agent-bus](https://github.com/MustaphaSteph/agent-bus) | MCP tools over one SQLite file, no daemon | an MCP-speaking agent |
-| [agmsg](https://github.com/fujibee/agmsg) | shared SQLite, Bash | bash + sqlite |
-| [agent-message-queue](https://github.com/avivsinai/agent-message-queue) | Maildir-style files | a filesystem |
-| Claude Code's own `ListAgents` / `SendMessage` | native | nothing, but Claude-only |
-| **AGxChat** | HTTP mailbox + text typed into a terminal | Node **and herdr** and agents already in panes |
+This one takes a different trade: delivery is text typed into a terminal, which
+is why it needs [herdr](https://github.com/herdrdev/herdr) and why agents must
+already be running in panes. That buys three things the queue-shaped designs do
+not have:
 
-Read that last column honestly: every alternative asks for a runtime, and this
-asks for a specific terminal multiplexer as well. That is the worst
-prerequisite in the table, it is self-inflicted by choosing TTY injection as
-the delivery mechanism, and it is the main reason to pick something else.
+- **It reaches an agent that speaks no protocol at all.** No MCP, no polling,
+  no client library — if it reads a terminal, it receives mail.
+- **It can say why a message did not land** — `deferred`, `stalled` with the
+  pane state behind it, `target_blocked` — because it can see the terminal. A
+  queue only knows whether a row was read.
+- **It separates a first-hand human request from a relayed one** (`--for` vs
+  `--via`), which came out of a real incident rather than a design session. See
+  Provenance below.
 
-What is genuinely different here, rather than merely different-looking:
-
-- **It reaches an agent with no MCP support at all**, because it types into the
-  terminal. An MCP-based bus needs the receiving agent to speak MCP; a
-  file-based queue needs it to poll. Delivery here is a nudge the agent cannot
-  miss and does not have to be built for.
-- **It says why a message did not land** — `deferred`, `stalled` with the pane
-  state that caused it, `target_blocked` — because it can see the terminal. A
-  queue knows only whether a row was read.
-- **It distinguishes a first-hand human request from a relayed one** (`--for`
-  vs `--via`). I have not found that modelled elsewhere, and it came out of a
-  real incident, not a design session — see Provenance below.
-
-If you want a durable cross-agent bus with the fewest moving parts, use
-agent-bus. Use this if you are already living in herdr panes and want delivery
-diagnostics and provenance.
+The prerequisite is the honest cost: Node, herdr, and panes. If that does not
+describe your setup, a SQLite or file-based bus will serve you better.
 
 ## Security
 
