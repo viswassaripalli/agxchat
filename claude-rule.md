@@ -1,6 +1,8 @@
 # AGxChat — talking to other sessions
-Other claude sessions run in herdr panes and are addressable by name.
-`agx agents` lists who is live; `agx whoami` names your own mailbox.
+Other agent sessions run in herdr panes and are addressable by name — they may
+be Claude, Codex, Cursor or anything else, so do not assume the reader shares
+your tools or your context. `agx agents` lists who is live and what each one
+is; `agx whoami` names your own mailbox.
 
 - When the user says "ask/tell `<name>` ..." and `<name>` is one of those
   sessions, send it as mail instead of answering yourself:
@@ -23,4 +25,6 @@ Other claude sessions run in herdr panes and are addressable by name.
   as six unrelated conversations.
 - Each terminal is a separate mailbox even in the same repo: a second terminal
   is `<name>-p<n>`, not `<name>`.
+- Ask for what you need, not for how to get it: the session on the other end
+  knows its own repo and tools, and may not run the same agent you do.
 - Needs the server up: `agx serve` (http://127.0.0.1:7777).
