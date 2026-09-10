@@ -20,6 +20,24 @@ while [ -L "$SELF" ]; do SELF="$(readlink "$SELF")"; done
 HOME_DIR="${AGX_HOME:-$(cd "$(dirname "$SELF")" && pwd)}"
 BASE="http://127.0.0.1:$PORT"
 
+# Which pane this command is running in. Defined before first use: bash
+# resolves functions at call time, and the identity block below runs early —
+# with the definition further down it failed with "my_pane: command not found".
+my_pane() {
+  # herdr exports this into the pane's environment; cheaper and more reliable
+  # than shelling out, and it still works if the socket API is unavailable.
+  if [ -n "${HERDR_PANE_ID:-}" ]; then
+    printf '%s' "$HERDR_PANE_ID"
+    return 0
+  fi
+  herdr pane current --current 2>/dev/null | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin)['result']['pane']['pane_id'])
+except Exception: pass
+" 2>/dev/null || true
+}
+
+
 # Identity: --from wins, then $HERDR_MAIL_ME, then the git root's directory name.
 FROM="${AGX_ME:-${HERDR_MAIL_ME:-}}"
 ARGS=()
@@ -60,15 +78,6 @@ VIA="${VIA:-}"
 THREAD="${THREAD:-}"
 POINTERS=("${POINTERS[@]:-}")
 
-# Which pane this command is running in. Several panes can share a cwd and
-# therefore an identity, so replies must come back to this one specifically.
-my_pane() {
-  herdr pane current --current 2>/dev/null | python3 -c "
-import json,sys
-try: print(json.load(sys.stdin)['result']['pane']['pane_id'])
-except Exception: pass
-" 2>/dev/null || true
-}
 CMD="${1:-help}"; shift || true
 
 running() { curl -sf --max-time 2 "$BASE/health" >/dev/null 2>&1; }
