@@ -224,6 +224,90 @@ for m in ms:
     if m['pointers']: print('   files:', ', '.join(m['pointers']))
     print()"
     ;;
+  uninstall)
+    PURGE=0
+    CONFIRMED=0
+    for a in "$@"; do
+      case "$a" in
+        --yes) CONFIRMED=1 ;;
+        --purge) PURGE=1 ;;
+      esac
+    done
+    RULE_FILE="${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md"
+    BACKUP="$HOME/.agxchat-backup-$(date +%Y%m%d-%H%M%S)"
+    if [ "$CONFIRMED" -ne 1 ]; then
+      cat >&2 <<EOF
+agx uninstall removes AGxChat from this machine:
+
+  · stops the server and the chat view
+  · closes herdr workspaces labelled AGxChat
+  · removes the AGxChat block from $RULE_FILE
+  · removes the agx (and mail-herdr) symlinks
+  · deletes $HOME_DIR
+
+Your seed and mail are copied to $BACKUP first.
+Add --purge to delete them with everything else, --yes to go ahead:
+
+  agx uninstall --yes
+EOF
+      exit 1
+    fi
+
+    echo "stopping the server"
+    pkill -f "tsx mail-server.ts" 2>/dev/null || true
+    pkill -f "mail-tui.tsx" 2>/dev/null || true
+
+    if command -v herdr >/dev/null 2>&1; then
+      for WS in $(herdr workspace list 2>/dev/null | python3 -c "
+import json,sys
+try: ws=json.load(sys.stdin)['result']['workspaces']
+except Exception: ws=[]
+for w in ws:
+    if (w.get('label') or '').lower() == 'agxchat': print(w['workspace_id'])
+" 2>/dev/null); do
+        herdr workspace close "$WS" >/dev/null 2>&1 && echo "closed workspace $WS"
+      done
+    fi
+
+    if grep -qF "<!-- agxchat:begin -->" "$RULE_FILE" 2>/dev/null; then
+      python3 "$HOME_DIR/rule.py" remove "$RULE_FILE"
+    fi
+
+    if [ "$PURGE" -eq 1 ]; then
+      echo "purging seed and mail (no backup kept)"
+    else
+      mkdir -p "$BACKUP"
+      [ -f "$HOME_DIR/agents.json" ] && cp "$HOME_DIR/agents.json" "$BACKUP/" 2>/dev/null
+      [ -f "$HOME_DIR/.run/mail.jsonl" ] && cp "$HOME_DIR/.run/mail.jsonl" "$BACKUP/" 2>/dev/null
+      echo "kept your seed and mail in $BACKUP"
+    fi
+
+    # Only unlink symlinks that point at THIS install; someone else's agx on
+    # PATH is not ours to remove.
+    for LINK in /usr/local/bin/agx "$HOME/.local/bin/agx" "$HOME/bin/agx" \
+                /usr/local/bin/mail-herdr "$HOME/.local/bin/mail-herdr"; do
+      if [ -L "$LINK" ] && [ "$(readlink "$LINK")" = "$HOME_DIR/agx" ]; then
+        rm -f "$LINK" && echo "unlinked $LINK"
+      fi
+    done
+
+    # bash reads a script incrementally, so a running agx cannot delete its own
+    # directory safely. Hand the last step to a detached copy.
+    CLEANUP=$(mktemp /tmp/agx-uninstall.XXXXXX)
+    cat > "$CLEANUP" <<EOF
+#!/usr/bin/env bash
+sleep 1
+rm -rf "$HOME_DIR"
+rm -f "$CLEANUP"
+EOF
+    chmod +x "$CLEANUP"
+    nohup "$CLEANUP" < /dev/null > /dev/null 2>&1 &
+    disown 2>/dev/null || true
+    echo "removed $HOME_DIR"
+    echo
+    echo "AGxChat is gone. Reinstall any time:"
+    echo "  curl -fsSL https://raw.githubusercontent.com/viswassaripalli/agxchat/main/install.sh | bash"
+    ;;
   seed)
     SEED_FILE="$HOME_DIR/agents.json"
     case "${1:-show}" in

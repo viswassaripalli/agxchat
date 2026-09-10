@@ -42,6 +42,21 @@ Update in place — same command is safe to re-run, or:
 agx update
 ```
 
+### Removing it
+
+```bash
+agx uninstall --yes
+```
+
+Stops the server and chat view, closes herdr workspaces labelled AGxChat,
+removes the CLAUDE.md block, unlinks `agx`, and deletes the clone. Your seed and
+mail are copied to `~/.agxchat-backup-<timestamp>` first; `--purge` deletes
+those too. Without `--yes` it prints what it would do and stops.
+
+It only unlinks symlinks that point at this install, and hands the final
+directory removal to a detached cleanup, since a running script cannot delete
+the directory it is being read from.
+
 `agx update` fast-forwards the clone, reinstalls dependencies, restarts the
 server if it was running, and refreshes the CLAUDE.md block **only if you
 already installed one**. Your `agents.json` and your mail survive: both are
@@ -90,6 +105,7 @@ list on their own — no CLAUDE.md edit, but it needs a restart per session too.
 | `agx delete <id>` / `delete-thread <id>` / `clear --yes` | remove a message, a whole thread, or everything |
 | `agx deleted` / `restore <id>` | list what delete hid, bring one back |
 | `agx update` | pull, reinstall deps, restart the server |
+| `agx uninstall --yes` | remove it all: server, chat space, CLAUDE.md block, symlinks, clone |
 
 In the chat view, `d` deletes the selected thread after a `y` confirmation.
 
