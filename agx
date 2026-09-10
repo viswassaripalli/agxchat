@@ -86,8 +86,14 @@ case "$CMD" in
   serve)
     if running; then echo "already up on $PORT"; exit 0; fi
     mkdir -p "$HOME_DIR/.run"
-    (cd "$HOME_DIR" && nohup npx tsx mail-server.ts > "$HOME_DIR/.run/server.log" 2>&1 &
-     echo $! > "$HOME_DIR/.run/server.pid")
+    # </dev/null and disown matter: without them the child keeps the caller's
+    # stdin and process group, so `agx serve` blocks instead of returning.
+    (
+      cd "$HOME_DIR" || exit 1
+      nohup npx tsx mail-server.ts < /dev/null > "$HOME_DIR/.run/server.log" 2>&1 &
+      echo $! > "$HOME_DIR/.run/server.pid"
+      disown 2>/dev/null || true
+    )
     for _ in $(seq 24); do running && break; sleep 0.5; done
     if running; then
       echo "AGxChat up on http://127.0.0.1:$PORT (log: $HOME_DIR/.run/server.log)"
@@ -105,9 +111,31 @@ case "$CMD" in
   chat)
     # --space puts the chat view in its own herdr workspace instead of a split.
     if [ "${1:-}" = "--space" ]; then
-      PANE=$(herdr workspace create --cwd "$HOME_DIR" --label "AGxChat" --no-focus \
-        | python3 -c "import json,sys; r=json.load(sys.stdin).get('result',{}); w=r.get('workspace',{}); print(w.get('active_pane_id') or r.get('pane',{}).get('pane_id') or '')")
-      [ -z "$PANE" ] && { echo "could not create a workspace; run: npx tsx mail-tui.tsx" >&2; exit 1; }
+      # herdr returns the new pane as result.root_pane; the other shapes are
+      # what `pane split` and `pane move` return, kept as fallbacks.
+      CREATED=$(herdr workspace create --cwd "$HOME_DIR" --label "AGxChat" --no-focus)
+      WS=$(printf '%s' "$CREATED" | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin).get('result',{}).get('workspace',{}).get('workspace_id') or '')
+except Exception: pass
+")
+      PANE=$(printf '%s' "$CREATED" \
+        | python3 -c "
+import json,sys
+r = json.load(sys.stdin).get('result', {})
+print(
+    r.get('root_pane', {}).get('pane_id')
+    or r.get('workspace', {}).get('active_pane_id')
+    or r.get('pane', {}).get('pane_id')
+    or ''
+)")
+      if [ -z "$PANE" ]; then
+        # The workspace was created before the pane id failed to parse. Leaving
+        # it behind is how you end up with two empty "AGxChat" spaces.
+        [ -n "$WS" ] && herdr workspace close "$WS" >/dev/null 2>&1
+        echo "could not resolve the new pane; run: npx tsx mail-tui.tsx" >&2
+        exit 1
+      fi
       herdr pane rename "$PANE" chat >/dev/null 2>&1 || true
       herdr pane run "$PANE" "cd $HOME_DIR && npx tsx mail-tui.tsx" >/dev/null
       echo "chat in workspace AGxChat, pane $PANE"
