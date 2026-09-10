@@ -480,7 +480,10 @@ function nudgeText(m: Mail): string {
   // replying to the reply is how you get an infinite politeness loop.
   if (m.kind === 'reply') {
     return m.inline
-      ? `${banner(`agxchat reply ${m.id} from ${m.from}`)} re: ${subject} \u2014 ${quoteForTty(m.body)}`
+      // The stored subject already carries exactly one "re:" (replySubject),
+      // so the template must not add another — that is where "re: re:" came
+      // from after the record itself was fixed.
+      ? `${banner(`agxchat reply ${m.id} from ${m.from}`)} ${subject} \u2014 ${quoteForTty(m.body)}`
       : `${banner(`agxchat ${m.id}: reply from ${m.from}`)} call mail_inbox`;
   }
 
