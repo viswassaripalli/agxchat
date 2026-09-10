@@ -206,8 +206,15 @@ print(
       herdr pane rename "$PANE" chat >/dev/null 2>&1 || true
       herdr pane run "$PANE" "cd $HOME_DIR && npx tsx mail-tui.tsx" >/dev/null
       echo "chat in workspace AGxChat, pane $PANE"
-    else
+    elif [ -t 0 ] && [ -t 1 ]; then
       (cd "$HOME_DIR" && exec npx tsx mail-tui.tsx)
+    else
+      # No TTY: Ink needs raw mode and dies with a stack trace that says
+      # nothing about why. This happens whenever `agx chat` is run from inside
+      # an agent session rather than a bare shell, so put it in a pane instead.
+      echo "agx: no TTY here (running inside an agent session?), so the chat view cannot draw." >&2
+      echo "     opening it in its own herdr pane instead — 'agx chat --space'." >&2
+      exec "$SELF" chat --space
     fi
     ;;
   update)
