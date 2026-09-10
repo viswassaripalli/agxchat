@@ -30,6 +30,7 @@ while [ $# -gt 0 ]; do
     --expect) EXPECT="$2"; shift 2 ;;
     --for|--requested-by) REQUESTED_BY="$2"; shift 2 ;;
     --via) VIA="$2"; shift 2 ;;
+    --thread) THREAD="$2"; shift 2 ;;
     --pointer) POINTERS+=("$2"); shift 2 ;;
     --inline) INLINE=1; shift ;;
     *) ARGS+=("$1"); shift ;;
@@ -56,6 +57,7 @@ INLINE="${INLINE:-1}"
 EXPECT="${EXPECT:-}"
 REQUESTED_BY="${REQUESTED_BY:-${AGX_FOR:-${HERDR_MAIL_FOR:-}}}"
 VIA="${VIA:-}"
+THREAD="${THREAD:-}"
 POINTERS=("${POINTERS[@]:-}")
 
 # Which pane this command is running in. Several panes can share a cwd and
@@ -135,20 +137,21 @@ for a in json.load(sys.stdin)['agents']:
     BODY="$*"
     python3 -c "
 import json,sys,urllib.request
-frm,to,subject,body,inline,base,expect,requested_by,via,from_pane = sys.argv[1:11]
-pointers=[p for p in sys.argv[11:] if p]
+frm,to,subject,body,inline,base,expect,requested_by,via,from_pane,thread = sys.argv[1:12]
+pointers=[p for p in sys.argv[12:] if p]
 payload={'from':frm,'to':to,'subject':subject,'body':body,'inline':inline=='1'}
 if expect: payload['expect']=expect
 if requested_by: payload['requested_by']=requested_by
 if via: payload['via']=via
 if from_pane: payload['from_pane']=from_pane
+if thread: payload['thread']=thread
 if pointers: payload['pointers']=pointers
 req=urllib.request.Request(base+'/mail',json.dumps(payload).encode(),{'Content-Type':'application/json'})
 try:
     print(json.dumps(json.load(urllib.request.urlopen(req)),indent=2))
 except urllib.error.HTTPError as e:
     print(e.read().decode()); sys.exit(1)
-" "$FROM" "$TO" "$SUBJECT" "$BODY" "$INLINE" "$BASE" "$EXPECT" "$REQUESTED_BY" "$VIA" "$(my_pane)" "${POINTERS[@]}"
+" "$FROM" "$TO" "$SUBJECT" "$BODY" "$INLINE" "$BASE" "$EXPECT" "$REQUESTED_BY" "$VIA" "$(my_pane)" "$THREAD" "${POINTERS[@]}"
     ;;
   inbox)
     WHO="${1:-$FROM}"

@@ -233,6 +233,10 @@ function App() {
   const [onlyAttention, setOnlyAttention] = useState(false);
   const [fullBodies, setFullBodies] = useState(false);
   const [follow, setFollow] = useState(true);
+  /** Off by default: distinct questions are distinct threads. On, every exchange
+   *  between the same two agents reads as one conversation — which is what you
+   *  want when a session sent six follow-ups as six new threads. */
+  const [byPair, setByPair] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [mode, setMode] = useState<'browse' | 'to' | 'subject' | 'body'>('browse');
   const [confirmDelete, setConfirmDelete] = useState<Thread | null>(null);
@@ -284,7 +288,30 @@ function App() {
     };
   }, []);
 
-  const threads = useMemo(() => buildThreads(mail), [mail, tick]);
+  const threads = useMemo(() => {
+    const built = buildThreads(mail);
+    if (!byPair) return built;
+    const pairs = new Map<string, Thread>();
+    for (const t of built) {
+      const key = [t.a.toLowerCase(), t.b.toLowerCase()].sort().join(' ⇄ ');
+      const prev = pairs.get(key);
+      if (!prev) {
+        pairs.set(key, { ...t });
+        continue;
+      }
+      const messages = [...prev.messages, ...t.messages].sort((x, y) => x.createdAt - y.createdAt);
+      pairs.set(key, {
+        ...prev,
+        messages,
+        // The newest exchange names the merged conversation.
+        subject: prev.lastAt >= t.lastAt ? prev.subject : t.subject,
+        lastAt: Math.max(prev.lastAt, t.lastAt),
+        needsAttention: prev.needsAttention || t.needsAttention,
+        reason: prev.reason ?? t.reason,
+      });
+    }
+    return [...pairs.values()].sort((x, y) => y.lastAt - x.lastAt);
+  }, [mail, tick, byPair]);
   const visible = useMemo(() => (onlyAttention ? threads.filter((t) => t.needsAttention) : threads), [threads, onlyAttention]);
   const attentionCount = threads.filter((t) => t.needsAttention).length;
 
@@ -378,6 +405,10 @@ function App() {
     }
     if (input === 'c') return setFullBodies((v) => !v);
     if (input === 'G') return setFollow((v) => !v);
+    if (input === 'p') {
+      setCursor(0);
+      return setByPair((v) => !v);
+    }
     if (input === 'e') return unblock();
     if (input === 'd') {
       if (selected) setConfirmDelete(selected);
@@ -421,6 +452,10 @@ function App() {
         <Text> </Text>
         <Text color={fullBodies ? 'cyan' : 'gray'} dimColor={!fullBodies}>
           [{fullBodies ? 'full bodies' : 'short bodies'}]
+        </Text>
+        <Text> </Text>
+        <Text color={byPair ? 'cyan' : 'gray'} dimColor={!byPair}>
+          [{byPair ? 'by pair' : 'by thread'}]
         </Text>
         {follow && <Text dimColor> [following]</Text>}
       </Box>
@@ -498,7 +533,7 @@ function App() {
 
       <Text dimColor>
         {mode === 'browse'
-          ? 'j/k move · f filter · c bodies · i write · d delete · e unblock · G follow · r reload · q quit'
+          ? 'j/k move · f filter · c bodies · p pair · i write · d delete · e unblock · G follow · q quit'
           : 'typing…'}
       </Text>
     </Box>

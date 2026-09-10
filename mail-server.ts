@@ -254,8 +254,37 @@ async function paneIdentities(agents?: HerdrAgent[]) {
   return out;
 }
 
+/**
+ * Who can answer soonest. `idle` and `done` are both free; `working` will get
+ * to it; `blocked` needs a human and answers nothing until then.
+ */
+const READINESS: Record<string, number> = { idle: 0, done: 1, working: 2, unknown: 3, blocked: 4 };
+
+/**
+ * Pick between candidates rather than refusing. Ambiguity used to return the
+ * list and make the sender choose, which is no help when one of them is sitting
+ * idle and the rest are busy — so: readiness first, then the canonical pane,
+ * then pane order for stability.
+ */
+async function pickReadiest(candidates: HerdrAgent[], agents: HerdrAgent[]) {
+  const identities = await paneIdentities(agents);
+  return [...candidates].sort((x, y) => {
+    const r = (READINESS[x.status] ?? 3) - (READINESS[y.status] ?? 3);
+    if (r !== 0) return r;
+    const cx = identities.get(x.paneId!)?.canonical ? 0 : 1;
+    const cy = identities.get(y.paneId!)?.canonical ? 0 : 1;
+    if (cx !== cy) return cx - cy;
+    return (x.paneId ?? '') < (y.paneId ?? '') ? -1 : 1;
+  })[0];
+}
+
 type Resolution =
-  | { ok: true; name: string; via: 'name' | 'topic' | 'repo' | 'pane' }
+  | {
+      ok: true;
+      name: string;
+      via: 'name' | 'topic' | 'repo' | 'pane';
+      chosen?: { paneId: string | null; status: string; among: { name: string; status: string }[] };
+    }
   | { ok: false; reason: 'unknown'; known: string[] }
   | { ok: false; reason: 'ambiguous'; candidates: { name: string; repo: string | null; paneId: string | null }[] };
 
@@ -279,14 +308,27 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
   const byTopic = [...registry.values()].filter((s) => s.topics.some((x) => key(x) === t));
   if (byTopic.length === 1) return { ok: true, name: byTopic[0].name, via: 'topic' };
   if (byTopic.length > 1) {
+    const panes = byTopic
+      .map((sn) => agents.find((a) => a.paneId === sn.paneId))
+      .filter((a): a is HerdrAgent => Boolean(a));
+    const winner = panes.length ? await pickReadiest(panes, agents) : null;
+    const chosenName = winner
+      ? (byTopic.find((sn) => sn.paneId === winner.paneId)?.name ?? winner.paneId!)
+      : byTopic[0].name;
     return {
-      ok: false,
-      reason: 'ambiguous',
-      candidates: byTopic.map((s) => ({
-        name: s.name,
-        repo: agents.find((a) => a.paneId === s.paneId)?.repo ?? null,
-        paneId: s.paneId,
-      })),
+      ok: true,
+      name: chosenName,
+      via: 'topic',
+      chosen: winner
+        ? {
+            paneId: winner.paneId,
+            status: winner.status,
+            among: byTopic.map((sn) => ({
+              name: sn.name,
+              status: agents.find((a) => a.paneId === sn.paneId)?.status ?? 'gone',
+            })),
+          }
+        : undefined,
     };
   }
 
@@ -301,14 +343,21 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
     return { ok: true, name: registered?.name ?? a.paneId!, via: 'repo' };
   }
   if (pool.length > 1) {
+    const identities = await paneIdentities(agents);
+    const winner = await pickReadiest(pool, agents);
+    const nameOf = (a: HerdrAgent) =>
+      identities.get(a.paneId!)?.name ??
+      [...registry.values()].find((sn) => sn.paneId === a.paneId)?.name ??
+      a.paneId!;
     return {
-      ok: false,
-      reason: 'ambiguous',
-      candidates: pool.map((a) => ({
-        name: [...registry.values()].find((s) => s.paneId === a.paneId)?.name ?? a.paneId!,
-        repo: a.repo,
-        paneId: a.paneId,
-      })),
+      ok: true,
+      name: nameOf(winner),
+      via: 'repo',
+      chosen: {
+        paneId: winner.paneId,
+        status: winner.status,
+        among: pool.map((a) => ({ name: nameOf(a), status: a.status })),
+      },
     };
   }
 
@@ -481,8 +530,22 @@ async function deliver(m: Mail, opts: { silent?: boolean } = {}) {
     m.delivery = 'undeliverable';
     m.deliveryDetail = 'no live pane for target';
   } else if (pane.status === 'blocked') {
-    m.delivery = 'target_blocked';
-    m.deliveryDetail = `pane ${pane.paneId} is blocked; a human or \`pane send-keys esc\` must clear it`;
+    // Blocked means a human must intervene before anything is read. If another
+    // terminal in the same repo is free, it has the same code and the same
+    // human in front of it, so send it there and say so.
+    const sibling = agents.filter(
+      (a) => a.paneId !== pane.paneId && a.cwd && a.cwd === pane.cwd && (a.status === 'idle' || a.status === 'done'),
+    );
+    const alt = sibling.length ? await pickReadiest(sibling, agents) : null;
+    if (alt?.paneId) {
+      const identities = await paneIdentities(agents);
+      m.targetPaneId = alt.paneId;
+      await nudgeNow(m, alt.paneId, alt.status);
+      m.deliveryDetail = `${pane.paneId} was blocked; delivered to ${identities.get(alt.paneId)?.name ?? alt.paneId} (${alt.paneId}, ${alt.status}) in the same repo`;
+    } else {
+      m.delivery = 'target_blocked';
+      m.deliveryDetail = `pane ${pane.paneId} is blocked; a human or \`pane send-keys esc\` must clear it`;
+    }
   } else if (opts.silent) {
     m.delivery = 'queued';
     m.deliveryDetail = 'sender is blocked in mail_wait; no nudge needed';
@@ -647,6 +710,13 @@ function buildMcpServer(identity: string | null) {
             'the human who asked you to send this, if a person did IN THIS SESSION. Unverified — the receiver treats ' +
               'it as a claim, not proof. Omit it when you are acting on your own initiative.',
           ),
+        thread: z
+          .string()
+          .optional()
+          .describe(
+            'id of a mail in an existing exchange to continue. Without it every send starts a new thread, so a ' +
+              'follow-up on the same subject shows up as a separate conversation.',
+          ),
         via: z
           .string()
           .optional()
@@ -656,7 +726,7 @@ function buildMcpServer(identity: string | null) {
           ),
       },
     },
-    async ({ to, subject, body, pointers, expect, kind, inline, requested_by, via }) => {
+    async ({ to, subject, body, pointers, expect, kind, inline, requested_by, via, thread }) => {
       const from = me();
       if (!from) return noIdentity();
       if (body.length > MAX_BODY) {
@@ -671,6 +741,8 @@ function buildMcpServer(identity: string | null) {
       const resolved = await resolveTarget(to, agents);
       if (!resolved.ok) return fail(resolved.reason, resolved);
 
+      if (thread && !mail.has(thread)) return fail('unknown_thread', { thread });
+
       const m: Mail = {
         id: newId(),
         kind: kind ?? 'ask',
@@ -680,7 +752,9 @@ function buildMcpServer(identity: string | null) {
         body,
         pointers: pointers ?? [],
         expect: expect ?? null,
-        replyTo: null,
+        // A continuation hangs off the named mail, so the exchange stays one
+        // thread while remaining an ask rather than a reply.
+        replyTo: thread ?? null,
         data: null,
         createdAt: Date.now(),
         readAt: null,
@@ -706,6 +780,7 @@ function buildMcpServer(identity: string | null) {
         id: m.id,
         to: m.to,
         via: resolved.via,
+        chosen: resolved.chosen,
         requested_by: m.requestedBy,
         via: m.via,
         provenance: m.requestedBy ? (m.via ? 'second-hand (relayed)' : 'first-hand claim, unverified') : 'none',
@@ -1026,9 +1101,12 @@ app.post('/mail', async (req, res) => {
   const resolved = await resolveTarget(to, agents);
   if (!resolved.ok) return res.status(409).json(resolved);
 
+  const threadId = typeof req.body?.thread === 'string' && req.body.thread.trim() ? req.body.thread.trim() : null;
+  if (threadId && !mail.has(threadId)) return res.status(404).json({ error: 'unknown_thread', thread: threadId });
+
   const m: Mail = {
     id: newId(), kind, from, to: resolved.name, subject, body,
-    pointers, expect, replyTo: null, data: null,
+    pointers, expect, replyTo: threadId, data: null,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: Boolean(req.body?.inline), notify,
     requestedBy: typeof req.body?.requested_by === 'string' && req.body.requested_by.trim()
@@ -1049,6 +1127,7 @@ app.post('/mail', async (req, res) => {
   res.json({
     id: m.id,
     to: m.to,
+    chosen: resolved.chosen,
     delivery: out.delivery,
     detail: out.detail,
     reply_lands_in: m.fromPaneId ?? 'the canonical pane for your name',
