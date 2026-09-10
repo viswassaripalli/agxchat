@@ -1217,6 +1217,8 @@ app.post('/mail', async (req, res) => {
   // Default by sender: a real session wants the reply nudged back into its own
   // pane; the TUI and scripts read the mailbox and want no TTY write. Explicit
   // notify always wins.
+  const m_fromPane =
+    typeof req.body?.from_pane === 'string' && req.body.from_pane.trim() ? req.body.from_pane.trim() : null;
   const senderPane = await resolvePane(registry.get(key(String(from))), String(from));
   const notify = typeof req.body?.notify === 'boolean' ? req.body.notify : Boolean(senderPane?.paneId);
   if (typeof to !== 'string' || !to) return res.status(400).json({ error: 'to is required' });
@@ -1228,6 +1230,27 @@ app.post('/mail', async (req, res) => {
 
   const threadId = typeof req.body?.thread === 'string' && req.body.thread.trim() ? req.body.thread.trim() : null;
   if (threadId && !mail.has(threadId)) return res.status(404).json({ error: 'unknown_thread', thread: threadId });
+
+  // Verify the SENDER, which unlike the human claim is checkable: the CLI
+  // reports the pane it runs in, and the server knows which identity owns that
+  // pane. A receiver told mail came from "ui" can now rely on that much, even
+  // though "a human asked for it" remains hearsay.
+  if (m_fromPane) {
+    const ids = await paneIdentities(agents);
+    const owner = ids.get(m_fromPane)?.name;
+    if (owner && key(owner) !== key(String(from)) && process.env.AGX_ALLOW_SENDER_OVERRIDE !== '1') {
+      return res.status(409).json({
+        error: 'sender_mismatch',
+        claimed: from,
+        pane: m_fromPane,
+        pane_identity: owner,
+        hint:
+          `pane ${m_fromPane} is "${owner}", not "${from}". Sending as another identity would make ` +
+          'its mailbox unattributable. Use --from only for a name that is not a live pane, or set ' +
+          'AGX_ALLOW_SENDER_OVERRIDE=1 deliberately.',
+      });
+    }
+  }
 
   const m: Mail = {
     id: newId(), kind, from, to: resolved.name, subject, body,

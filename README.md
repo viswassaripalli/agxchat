@@ -287,8 +287,28 @@ the person who asked. It rides in the nudge itself
 before opening anything, and `agx inbox` marks mail with no named human
 as `(no human named — bot-initiated)`.
 
-**It is a claim, not proof.** The server is unauthenticated localhost; any sender
-can write any name. It exists to make a human request *expressible*, not
+### What is verified, and what is not
+
+Two different questions hide inside "where did this come from", and they have
+different answers:
+
+| | Verified? |
+| --- | --- |
+| **Which pane sent it** | **Yes.** The CLI reports its own pane, the server knows which identity owns that pane, and a mismatch is refused with `sender_mismatch`. Overridable only with `AGX_ALLOW_SENDER_OVERRIDE=1` |
+| **Whether a human asked** | **No.** `--for` is a string the sender types |
+| **Whether the sender heard it from the human** | **No.** `--via` is voluntary, and *its absence proves nothing* |
+
+That last row is the flag's real limit, put best by a session that received the
+pair: "`--via` being present tells me the sender is being scrupulous, while its
+absence tells me nothing — an agent relaying a claim it never heard from a human
+can simply omit it, which is the failure mode the flag exists to prevent and
+cannot itself detect."
+
+So provenance here is graded hearsay with a verified return address. That is
+worth having and is not the same as authorisation.
+
+**The human claim is a claim, not proof.** The server is localhost with one
+shared token; any client holding it can write any name in `--for`. It exists to make a human request *expressible*, not
 verifiable. Add a shared secret before this leaves your own machine.
 
 ### Second-hand claims
