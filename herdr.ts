@@ -208,6 +208,41 @@ export async function sendKeys(paneId: string, keys: string[]): Promise<void> {
   await exec(HERDR, ['pane', 'send-keys', paneId, ...keys]);
 }
 
+export type AgentExplanation = {
+  state: AgentStatus;
+  /** herdr's own rule id, e.g. bash_permission_prompt, live_prompt_box. */
+  matchedRule: string | null;
+  /** herdr's judgement that something on screen is blocking the agent. */
+  visibleBlocker: boolean;
+};
+
+/**
+ * Why herdr thinks a pane is in the state it reports.
+ *
+ * This replaces a hand-written regex over pane text. herdr ships a detection
+ * manifest per agent kind, refreshes it remotely, and names the rule that
+ * matched — so it already knows what a Claude permission prompt and a Codex
+ * approval dialog look like, and keeps knowing when those UIs change. Guessing
+ * at the same thing locally was how an idle pane got reported as parked on a
+ * prompt because the word "allow" appeared in scrollback.
+ */
+export async function explainAgent(target: string): Promise<AgentExplanation | null> {
+  try {
+    const { stdout } = await exec(HERDR, ['agent', 'explain', target, '--json'], {
+      maxBuffer: 8 * 1024 * 1024,
+    });
+    const parsed = JSON.parse(stdout);
+    const raw = parsed?.result ?? parsed;
+    return {
+      state: STATUSES.has(raw?.state) ? (raw.state as AgentStatus) : 'unknown',
+      matchedRule: typeof raw?.matched_rule?.id === 'string' ? raw.matched_rule.id : null,
+      visibleBlocker: raw?.visible_blocker === true,
+    };
+  } catch {
+    return null;
+  }
+}
+
 export async function herdrVersion(): Promise<string> {
   const { stdout } = await exec(HERDR, ['--version']);
   return stdout.trim();

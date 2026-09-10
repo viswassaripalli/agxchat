@@ -17,7 +17,7 @@ import { readFile, appendFile, writeFile, mkdir } from 'node:fs/promises';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { listAgents, nudge, sendKeys, readPane, herdrVersion, type HerdrAgent } from './herdr.ts';
+import { listAgents, nudge, sendKeys, readPane, explainAgent, herdrVersion, type HerdrAgent } from './herdr.ts';
 import { createEventBus, startAgentPoll, type MailEvent } from './mail-events.ts';
 
 const PORT = Number(process.env.AGX_PORT ?? process.env.HERDR_MAIL_PORT ?? 7777);
@@ -440,6 +440,7 @@ async function flushDeferred(paneId: string, status: string) {
  */
 const STALL_MS = Number(process.env.AGX_STALL_MS ?? process.env.HERDR_MAIL_STALL_MS ?? 60_000);
 /**
+ * Fallback only, for herdr versions without `agent explain --json`.
  * Phrases that only appear in an actual permission dialog. Deliberately narrow:
  * a bare /allow/ matched the line "allow agx in settings" that a human had
  * typed, and the mail was reported as parked on a prompt when the pane was
@@ -496,14 +497,25 @@ async function checkStalls() {
     } else if (pane.status === 'working') {
       continue; // it is thinking about it; not stalled
     } else {
-      const screen = m.targetPaneId ? await readPane(m.targetPaneId, 40).catch(() => '') : '';
-      const tail = screen.split('\n').slice(-PROMPT_TAIL_LINES).join('\n');
-      const awaiting = PERMISSION_MARKERS.test(tail);
       const waited = Math.round((now - m.nudgedAt!) / 1000);
+      // Ask herdr why, rather than guessing from pane text. It maintains a
+      // detection manifest per agent kind and names the rule that matched.
+      const why = m.targetPaneId ? await explainAgent(m.targetPaneId) : null;
+      let awaiting = false;
+      let because = '';
+      if (why) {
+        awaiting = why.visibleBlocker || /permission|prompt|elicitation|blocked_form/.test(why.matchedRule ?? '');
+        because = why.matchedRule ? ` (herdr rule: ${why.matchedRule})` : '';
+      } else {
+        // Older herdr, or explain unavailable: fall back to reading the tail.
+        const screen = m.targetPaneId ? await readPane(m.targetPaneId, 40).catch(() => '') : '';
+        awaiting = PERMISSION_MARKERS.test(screen.split('\n').slice(-PROMPT_TAIL_LINES).join('\n'));
+        because = awaiting ? ' (matched on pane text)' : '';
+      }
       m.delivery = 'stalled';
       m.deliveryDetail = awaiting
-        ? `pane ${pane.paneId} is waiting on a permission prompt (it still reports "${pane.status}"); a human must answer it`
-        : `pane ${pane.paneId} is ${pane.status} but has not read mail ${m.id} in ${waited}s`;
+        ? `pane ${pane.paneId} is waiting for a human${because}; it reports "${pane.status}"`
+        : `pane ${pane.paneId} is ${pane.status} but has not read mail ${m.id} in ${waited}s${because}`;
     }
     await persist(m);
     bus.emit({ type: 'delivery', id: m.id, to: m.to, delivery: m.delivery, detail: m.deliveryDetail ?? undefined });
