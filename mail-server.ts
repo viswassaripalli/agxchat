@@ -459,7 +459,9 @@ function unstall(m: Mail, why: string) {
 async function checkStalls() {
   const now = Date.now();
   const candidates = [...mail.values()].filter((m) => {
-    if (m.delivery !== 'nudged_idle' && m.delivery !== 'nudged_inline') return false;
+    // Already-stalled mail is re-examined too: the reason is a live reading of
+    // the pane, and a stale one outlives whatever it described.
+    if (m.delivery !== 'nudged_idle' && m.delivery !== 'nudged_inline' && m.delivery !== 'stalled') return false;
     if (m.readAt !== null || m.engagedAt !== null) return false;
     if (m.nudgedAt === null || now - m.nudgedAt <= STALL_MS) return false;
     // An inline reply carries its whole payload in the TTY and nothing answers
