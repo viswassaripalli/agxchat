@@ -63,6 +63,8 @@ type Mail = {
    */
   requestedBy: string | null;
   nudgedAt: number | null;
+  /** Set when the target started working after the nudge: it picked this up. */
+  engagedAt: number | null;
 };
 
 type Session = {
@@ -313,16 +315,27 @@ async function flushDeferred(paneId: string, status: string) {
 const STALL_MS = Number(process.env.AGX_STALL_MS ?? process.env.HERDR_MAIL_STALL_MS ?? 60_000);
 const PERMISSION_MARKERS = /need permission|do you want|would you like|\ballow\b|requires approval|esc to (cancel|interrupt)/i;
 
+/** A stall is a live guess, not a verdict: reading or engaging clears it. */
+function unstall(m: Mail, why: string) {
+  if (m.delivery !== 'stalled') return false;
+  m.delivery = m.inline ? 'nudged_inline' : 'nudged_idle';
+  m.deliveryDetail = why;
+  bus.emit({ type: 'delivery', id: m.id, to: m.to, delivery: m.delivery, detail: m.deliveryDetail });
+  return true;
+}
+
 async function checkStalls() {
   const now = Date.now();
-  const candidates = [...mail.values()].filter(
-    (m) =>
-      (m.delivery === 'nudged_idle' || m.delivery === 'nudged_inline') &&
-      m.readAt === null &&
-      m.nudgedAt !== null &&
-      now - m.nudgedAt > STALL_MS &&
-      ![...mail.values()].some((r) => r.kind === 'reply' && r.replyTo === m.id),
-  );
+  const candidates = [...mail.values()].filter((m) => {
+    if (m.delivery !== 'nudged_idle' && m.delivery !== 'nudged_inline') return false;
+    if (m.readAt !== null || m.engagedAt !== null) return false;
+    if (m.nudgedAt === null || now - m.nudgedAt <= STALL_MS) return false;
+    // An inline reply carries its whole payload in the TTY and nothing answers
+    // a reply, so it has no "read" and no "answered" signal to wait for. It is
+    // delivered on arrival; flagging it would stall forever.
+    if (m.kind === 'reply' && m.inline) return false;
+    return ![...mail.values()].some((r) => r.kind === 'reply' && r.replyTo === m.id);
+  });
   if (candidates.length === 0) return;
 
   const agents = await listAgents(false).catch(() => []);
@@ -350,14 +363,18 @@ bus.subscribe((ev) => {
   if (ev.type === 'agent_state' && (ev.to === 'idle' || ev.to === 'done')) {
     void flushDeferred(ev.paneId, ev.to);
   }
-  // A stalled target that starts working is un-stalled: it picked the mail up.
+  // A target that starts working after a nudge has engaged with it. Recorded
+  // even when the mail is not currently flagged, because a session that picks
+  // mail up and finishes inside the stall window would otherwise be flagged
+  // afterwards for never having "read" it.
   if (ev.type === 'agent_state' && ev.to === 'working') {
     for (const m of mail.values()) {
-      if (m.delivery === 'stalled' && m.targetPaneId === ev.paneId) {
-        m.delivery = m.inline ? 'nudged_inline' : 'nudged_idle';
-        m.deliveryDetail = `pane ${ev.paneId} started working on it`;
+      if (m.targetPaneId === ev.paneId && m.nudgedAt && !m.engagedAt) {
+        m.engagedAt = Date.now();
         void persist(m);
-        bus.emit({ type: 'delivery', id: m.id, to: m.to, delivery: m.delivery, detail: m.deliveryDetail });
+      }
+      if (m.targetPaneId === ev.paneId && unstall(m, `pane ${ev.paneId} started working on it`)) {
+        void persist(m);
       }
     }
   }
@@ -581,6 +598,7 @@ function buildMcpServer(identity: string | null) {
         notify: true,
         requestedBy: requested_by ?? null,
         nudgedAt: null,
+        engagedAt: null,
       };
       mail.set(m.id, m);
       await persist(m);
@@ -626,8 +644,11 @@ function buildMcpServer(identity: string | null) {
       items = items.slice(-(limit ?? 20));
       const now = Date.now();
       for (const m of items) {
+        const wasStalled = unstall(m, 'read by recipient');
         if (m.readAt === null) {
           m.readAt = now;
+          await persist(m);
+        } else if (wasStalled) {
           await persist(m);
         }
       }
@@ -682,6 +703,7 @@ function buildMcpServer(identity: string | null) {
         notify: orig.notify, // a TUI-only sender stays TUI-only for the reply
         requestedBy: orig.requestedBy,
         nudgedAt: null,
+        engagedAt: null,
       };
       mail.set(reply.id, reply);
       await persist(reply);
@@ -864,10 +886,27 @@ app.get('/agents', async (_req, res) => res.json({ agents: await mergedAgents() 
 
 app.post('/reload-seed', async (_req, res) => res.json(await loadSeed()));
 
-app.get('/mail', (req, res) => {
+app.get('/mail', async (req, res) => {
   const to = typeof req.query.to === 'string' ? req.query.to : null;
   const all = [...mail.values()].sort((a, b) => a.createdAt - b.createdAt);
-  res.json({ mail: to ? all.filter((m) => key(m.to) === key(to)) : all });
+  if (!to) return res.json({ mail: all });
+
+  // Fetching your own inbox IS reading it. Without this, a session that reads
+  // with the CLI never marks anything read, and stall detection — which keys
+  // off readAt — fires on mail that was delivered and read perfectly well.
+  const mine = all.filter((m) => key(m.to) === key(to));
+  if (req.query.mark !== 'none') {
+    for (const m of mine) {
+      const wasStalled = unstall(m, 'read by recipient');
+      if (m.readAt === null) {
+        m.readAt = Date.now();
+        await persist(m);
+      } else if (wasStalled) {
+        await persist(m);
+      }
+    }
+  }
+  res.json({ mail: mine });
 });
 
 /** Powers the TUI's `i` key. */
@@ -894,7 +933,7 @@ app.post('/mail', async (req, res) => {
     requestedBy: typeof req.body?.requested_by === 'string' && req.body.requested_by.trim()
       ? req.body.requested_by.trim()
       : null,
-    nudgedAt: null,
+    nudgedAt: null, engagedAt: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -921,7 +960,7 @@ app.post('/reply', async (req, res) => {
     subject: `re: ${orig.subject}`, body, pointers, expect: null, replyTo: orig.id, data,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
-    nudgedAt: null,
+    nudgedAt: null, engagedAt: null,
   };
   mail.set(reply.id, reply);
   await persist(reply);
