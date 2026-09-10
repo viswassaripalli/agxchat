@@ -227,6 +227,23 @@ const waitGraph = new Map<string, { target: string; mailId: string }>();
 
 const key = (name: string) => name.trim().toLowerCase();
 
+const MAX_SUBJECT = 160;
+
+/**
+ * A reply's subject.
+ *
+ * Prefixes used to accumulate — "re: re: re: …" — because every reply prefixed
+ * whatever it received. In a thread that goes back and forth a few times the
+ * subject becomes unreadable, and anything a sender put in the original
+ * subject rides along in every message after it, which matters when the
+ * original subject was an attempt at forging a banner.
+ */
+function replySubject(subject: string): string {
+  const stripped = subject.replace(/^(\s*re:\s*)+/i, '').trim();
+  const capped = stripped.length > MAX_SUBJECT ? stripped.slice(0, MAX_SUBJECT - 1) + '\u2026' : stripped;
+  return `re: ${capped}`;
+}
+
 function newId(): string {
   for (let i = 0; i < 50; i++) {
     const id = randomBytes(2).toString('hex');
@@ -896,6 +913,9 @@ function buildMcpServer(identity: string | null) {
     async ({ to, subject, body, pointers, expect, kind, inline, requested_by, via, thread }) => {
       const from = me();
       if (!from) return noIdentity();
+      if (subject.length > MAX_SUBJECT * 2) {
+        return fail('subject_too_long', { length: subject.length, max: MAX_SUBJECT * 2 });
+      }
       if (body.length > MAX_BODY) {
         return fail('body_too_large', {
           length: body.length,
@@ -1019,6 +1039,9 @@ function buildMcpServer(identity: string | null) {
     async ({ mail_id, body, pointers, data }) => {
       const from = me();
       if (!from) return noIdentity();
+      if (subject.length > MAX_SUBJECT * 2) {
+        return fail('subject_too_long', { length: subject.length, max: MAX_SUBJECT * 2 });
+      }
       if (body.length > MAX_BODY) {
         return fail('body_too_large', { length: body.length, max: MAX_BODY, hint: 'Write the result to a file and pass its path in `pointers`.' });
       }
@@ -1031,7 +1054,7 @@ function buildMcpServer(identity: string | null) {
         kind: 'reply',
         from,
         to: orig.from,
-        subject: `re: ${orig.subject}`,
+        subject: replySubject(orig.subject),
         body,
         pointers: pointers ?? [],
         expect: null,
@@ -1388,7 +1411,7 @@ app.post('/reply', async (req, res) => {
 
   const reply: Mail = {
     id: newId(), kind: 'reply', from: String(from ?? orig.to), to: orig.from,
-    subject: `re: ${orig.subject}`, body, pointers, expect: null, replyTo: orig.id, data,
+    subject: replySubject(orig.subject), body, pointers, expect: null, replyTo: orig.id, data,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
     via: orig.via, fromPaneId: null, senderConsistent: null, senderObserved: false, preferPaneId: orig.fromPaneId,
