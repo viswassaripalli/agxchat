@@ -1,0 +1,181 @@
+#!/usr/bin/env bash
+# AGxChat CLI — lets any session send and read mail with no MCP setup.
+#
+#   mail agents
+#   mail send <to> <subject> <body...>        --from NAME  --expect "shape"  --for HUMAN
+#     --for names the person who asked. Send it whenever a human asked, so the
+#     receiver can tell a human request from a bot one. Unverified by design.
+#   mail inbox [name]
+#   mail thread <mail-id>
+#   mail reply <mail-id> <body...>
+#
+# Put it on PATH once:  ln -s $HOME/agxchat/mail /usr/local/bin/agx
+set -euo pipefail
+PORT="${AGX_PORT:-${HERDR_MAIL_PORT:-7777}}"
+
+# Follow the symlink so `agx` works from any cwd and after `agx update`.
+SELF="${BASH_SOURCE[0]}"
+while [ -L "$SELF" ]; do SELF="$(readlink "$SELF")"; done
+HOME_DIR="${AGX_HOME:-$(cd "$(dirname "$SELF")" && pwd)}"
+BASE="http://127.0.0.1:$PORT"
+
+# Identity: --from wins, then $HERDR_MAIL_ME, then the git root's directory name.
+FROM="${AGX_ME:-${HERDR_MAIL_ME:-}}"
+ARGS=()
+POINTERS=()
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --from) FROM="$2"; shift 2 ;;
+    --expect) EXPECT="$2"; shift 2 ;;
+    --for|--requested-by) REQUESTED_BY="$2"; shift 2 ;;
+    --pointer) POINTERS+=("$2"); shift 2 ;;
+    --inline) INLINE=1; shift ;;
+    *) ARGS+=("$1"); shift ;;
+  esac
+done
+set -- "${ARGS[@]}"
+if [ -z "$FROM" ]; then
+  # Ask the server who occupies this cwd, so the sender shows up as its
+  # registered name ("design") rather than its directory ("design-system").
+  FROM="$(curl -s --max-time 2 "$BASE/agents" 2>/dev/null | python3 -c "
+import json,sys,os
+try: agents=json.load(sys.stdin)['agents']
+except Exception: raise SystemExit
+cwd=os.getcwd()
+for a in agents:
+    if a.get('cwd') and (cwd==a['cwd'] or cwd.startswith(a['cwd']+'/')):
+        print(a['name'] or a['paneId']); break
+" 2>/dev/null || true)"
+  if [ -z "$FROM" ]; then
+    ROOT="$(git rev-parse --show-toplevel 2>/dev/null || pwd)"
+    FROM="$(basename "$ROOT")"
+  fi
+fi
+INLINE="${INLINE:-1}"
+EXPECT="${EXPECT:-}"
+REQUESTED_BY="${REQUESTED_BY:-${AGX_FOR:-${HERDR_MAIL_FOR:-}}}"
+POINTERS=("${POINTERS[@]:-}")
+
+jq_or_cat() { python3 -m json.tool 2>/dev/null || cat; }
+CMD="${1:-help}"; shift || true
+
+running() { curl -sf --max-time 2 "$BASE/health" >/dev/null 2>&1; }
+
+case "$CMD" in
+  serve)
+    if running; then echo "already up on $PORT"; exit 0; fi
+    mkdir -p "$HOME_DIR/.run"
+    (cd "$HOME_DIR" && nohup npx tsx mail-server.ts > "$HOME_DIR/.run/server.log" 2>&1 &
+     echo $! > "$HOME_DIR/.run/server.pid")
+    for _ in $(seq 24); do running && break; sleep 0.5; done
+    if running; then
+      echo "AGxChat up on http://127.0.0.1:$PORT (log: $HOME_DIR/.run/server.log)"
+    else
+      echo "failed to start — last lines:" >&2; tail -20 "$HOME_DIR/.run/server.log" >&2; exit 1
+    fi
+    ;;
+  stop)
+    pkill -f "tsx mail-server.ts" 2>/dev/null && echo "stopped" || echo "was not running"
+    ;;
+  status)
+    running || { echo "server: down (agx serve)"; exit 1; }
+    curl -s "$BASE/health" | python3 -m json.tool
+    ;;
+  chat)
+    # --space puts the chat view in its own herdr workspace instead of a split.
+    if [ "${1:-}" = "--space" ]; then
+      PANE=$(herdr workspace create --cwd "$HOME_DIR" --label "AGxChat" --no-focus \
+        | python3 -c "import json,sys; r=json.load(sys.stdin).get('result',{}); w=r.get('workspace',{}); print(w.get('active_pane_id') or r.get('pane',{}).get('pane_id') or '')")
+      [ -z "$PANE" ] && { echo "could not create a workspace; run: npx tsx mail-tui.tsx" >&2; exit 1; }
+      herdr pane rename "$PANE" chat >/dev/null 2>&1 || true
+      herdr pane run "$PANE" "cd $HOME_DIR && npx tsx mail-tui.tsx" >/dev/null
+      echo "chat in workspace AGxChat, pane $PANE"
+    else
+      (cd "$HOME_DIR" && exec npx tsx mail-tui.tsx)
+    fi
+    ;;
+  update)
+    git -C "$HOME_DIR" rev-parse --git-dir >/dev/null 2>&1 || { echo "$HOME_DIR is not a git clone" >&2; exit 1; }
+    BEFORE=$(git -C "$HOME_DIR" rev-parse --short HEAD)
+    git -C "$HOME_DIR" pull --ff-only --quiet
+    AFTER=$(git -C "$HOME_DIR" rev-parse --short HEAD)
+    if [ "$BEFORE" = "$AFTER" ]; then echo "already current ($AFTER)"; exit 0; fi
+    (cd "$HOME_DIR" && npm install --silent --no-audit --no-fund)
+    echo "updated $BEFORE -> $AFTER"
+    # The server holds all mail in memory; the JSONL store replays it on boot.
+    if running; then
+      pkill -f "tsx mail-server.ts" 2>/dev/null || true
+      sleep 1
+      "$SELF" serve
+    fi
+    ;;
+  bootstrap)
+    (cd "$HOME_DIR" && ./bootstrap.sh "$@")
+    ;;
+  agents)
+    curl -s "$BASE/agents" | python3 -c "
+import json,sys
+for a in json.load(sys.stdin)['agents']:
+    t=' '.join(a['topics']) or '-'
+    print(f\"{str(a['name']):12} {str(a['paneId']):7} {str(a['repo']):18} {a['status']:8} [{t}]\")"
+    ;;
+  send)
+    TO="${1:?usage: mail send <to> <subject> <body...>}"; shift
+    SUBJECT="${1:?subject required}"; shift
+    BODY="$*"
+    python3 -c "
+import json,sys,urllib.request
+frm,to,subject,body,inline,base,expect,requested_by = sys.argv[1:9]
+pointers=[p for p in sys.argv[9:] if p]
+payload={'from':frm,'to':to,'subject':subject,'body':body,'inline':inline=='1'}
+if expect: payload['expect']=expect
+if requested_by: payload['requested_by']=requested_by
+if pointers: payload['pointers']=pointers
+req=urllib.request.Request(base+'/mail',json.dumps(payload).encode(),{'Content-Type':'application/json'})
+try:
+    print(json.dumps(json.load(urllib.request.urlopen(req)),indent=2))
+except urllib.error.HTTPError as e:
+    print(e.read().decode()); sys.exit(1)
+" "$FROM" "$TO" "$SUBJECT" "$BODY" "$INLINE" "$BASE" "$EXPECT" "$REQUESTED_BY" "${POINTERS[@]}"
+    ;;
+  inbox)
+    WHO="${1:-$FROM}"
+    curl -s "$BASE/mail?to=$WHO" | python3 -c "
+import json,sys
+ms=json.load(sys.stdin)['mail']
+if not ms: print('inbox empty'); raise SystemExit
+for m in ms:
+    behalf = f\" on behalf of {m['requestedBy']}\" if m.get('requestedBy') else ' (no human named — bot-initiated)'
+    print(f\"[{m['id']}] {m['kind']:5} from {m['from']:10}{behalf}  {m['delivery']:14} {'read' if m['readAt'] else 'UNREAD'}\")
+    print(f\"   {m['subject']}\")
+    print('   '+m['body'].replace(chr(10),chr(10)+'   '))
+    if m['pointers']: print('   files:', ', '.join(m['pointers']))
+    print()"
+    ;;
+  thread)
+    ID="${1:?usage: mail thread <mail-id>}"
+    curl -s "$BASE/mail" | python3 -c "
+import json,sys
+ms=json.load(sys.stdin)['mail']; want=sys.argv[1]
+ids={want} | {m['id'] for m in ms if m.get('replyTo')==want}
+for m in sorted((m for m in ms if m['id'] in ids), key=lambda m: m['createdAt']):
+    print(f\"[{m['id']}] {m['from']} -> {m['to']} ({m['delivery']})\")
+    print(f\"   {m['subject']}\"); print('   '+m['body'].replace(chr(10),chr(10)+'   ')); print()" "$ID"
+    ;;
+  reply)
+    ID="${1:?usage: mail reply <mail-id> <body...>}"; shift
+    BODY="$*"
+    python3 -c "
+import json,sys,urllib.request
+payload=json.dumps({'mail_id':sys.argv[1],'from':sys.argv[2],'body':sys.argv[3]}).encode()
+req=urllib.request.Request(sys.argv[4]+'/reply',payload,{'Content-Type':'application/json'})
+try:
+    print(json.dumps(json.load(urllib.request.urlopen(req)),indent=2))
+except urllib.error.HTTPError as e:
+    print(e.read().decode()); sys.exit(1)
+" "$ID" "$FROM" "$BODY" "$BASE"
+    ;;
+  *)
+    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    ;;
+esac

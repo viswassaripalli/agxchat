@@ -1,0 +1,24 @@
+{
+  "agents": [
+    {
+      "name": "design",
+      "cwd": "/absolute/path/to/design-system",
+      "topics": ["design", "design-system", "components"]
+    },
+    {
+      "name": "tests",
+      "cwd": "/absolute/path/to/e2e-tests",
+      "topics": ["tests", "e2e", "suite"]
+    },
+    {
+      "name": "web",
+      "cwd": "/absolute/path/to/web-app",
+      "topics": ["web", "frontend", "ui"]
+    },
+    {
+      "name": "api",
+      "cwd": "/absolute/path/to/api",
+      "topics": ["api", "backend", "server"]
+    }
+  ]
+}

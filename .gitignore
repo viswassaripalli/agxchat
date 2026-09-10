@@ -1,0 +1,7 @@
+node_modules/
+.run/
+*.log
+# Real seed: absolute paths to your own repos. Copy agents.example.json instead.
+agents.json
+.mcp.json.bak-*
+.DS_Store
