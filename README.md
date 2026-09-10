@@ -287,43 +287,49 @@ the person who asked. It rides in the nudge itself
 before opening anything, and `agx inbox` marks mail with no named human
 as `(no human named — bot-initiated)`.
 
-### What is verified: nothing
+### What is checked, and by whom
 
-Three questions hide inside "where did this come from", and the honest answer
-to all three is the same:
+Three questions hide inside "where did this come from":
 
-| | Checked? |
-| --- | --- |
-| Whether a human asked | No — `--for` is a string the sender types |
-| Whether the sender heard it from that human | No — `--via` is voluntary, and its absence proves nothing |
-| Which pane sent it | **No.** The pane id is self-reported over HTTP |
+| | Checked? | By what |
+| --- | --- | --- |
+| **Which pane sent it** | **Yes** | the connection itself — peer port → owning pid → process ancestry → the pids herdr reports for each pane |
+| Whether a human asked | No | `--for` is a string the sender types |
+| Whether the sender heard it from that human | No | `--via` is voluntary, and its absence proves nothing |
 
-The third row was briefly claimed as verified, and that was wrong. The server
-compares the claimed sender against the claimed pane, which catches an honest
-mistake and nothing else: a client that lies about both at once satisfies it.
-Demonstrated — a `POST` claiming another session's name *and* its pane was
-accepted, delivered, labelled *"sender verified"*, and its reply addressed to
-the impersonated session's real pane. A false assurance is worse than none, so
-the annotation now reads `(sender self-reports pane w6:p1; NOT verified —
-forgeable)`.
+The first row took three attempts to get right, and the first two were wrong in
+a way worth recording.
 
-Real verification means the OS naming the caller — peer credentials over a unix
-socket, then PID to pane — because any shared secret on this machine is
-readable by anything running as you. That is not built.
+**Attempt one:** compare the claimed sender against the claimed pane. Passes a
+consistent lie — a `POST` naming another session *and* its pane was accepted,
+delivered, labelled "sender verified", and its reply addressed to the
+impersonated session's real pane.
 
-Two things the receiving sessions said about this, which are the actual
-takeaway:
+**Attempt two:** say so honestly — `(sender self-reports pane X; NOT verified —
+forgeable)`. Accurate, but it only warned; the hole was still open.
 
-> I am trusting the annotation, not verifying anything myself. I have no
-> independent way to authenticate a pane from inside this session, so if the
-> transport is honest this is real evidence, and if it is compromised the line
-> is as forgeable as `--from` was.
+**Attempt three,** which is what ships: the server takes the peer port off the
+socket, asks the OS which process owns it, walks that process's ancestry, and
+matches against `herdr pane process-info`. Nothing in that chain comes from the
+caller. `from_pane` is now ignored whenever an origin can be observed, and a
+mismatched sender is refused with `sender_forged`. `GET /origin` shows what the
+server sees, so the claim can be checked rather than believed. The same spoof
+that succeeded before now returns 403.
 
-> It identifies the pane a mail came from, not who composed it in that pane.
+The prescription came from a receiving session, verbatim: *"it has to be
+stamped by the server from the connection it actually received the mail on and
+rendered from the server's record, never from a field the client supplies."*
 
-The second one lands hardest: the incident that motivated all of this — mail
-sent under a pane's name that its session had not written — would be labelled
-consistent by this check, because it really did come from that pane.
+Its assessment afterwards is the right caveat to end on: *"the on-behalf-of
+remains unverifiable, and I still cannot check the annotation from inside the
+payload, so it is only as good as the server."* Origin is now real; authority
+never was. Which is why both receiving sessions hold the same line — a verified
+origin plus an unverifiable on-behalf-of is not authorisation for a side
+effect.
+
+Not covered: requests that arrive without an observable origin — MCP calls
+proxied through another process, or anything `lsof` cannot match. Those fall
+back to self-reported and are labelled as such.
 
 **The human claim is a claim, not proof.** The server is localhost with one
 shared token; any client holding it can write any name in `--for`. It exists to make a human request *expressible*, not
