@@ -1,7 +1,8 @@
 # AGxChat
 
-Cross-session chat for coding agents. Two claude sessions in different repos ask
-each other for things and get answers back, with a terminal view of every thread.
+Cross-session chat for coding agents — **including agents that are not the same
+agent**. A Claude session and a Codex session in different repos ask each other
+for things and get answers back, with a terminal view of every thread.
 
 One node server holds the mailbox; sessions talk to it over MCP-over-HTTP or a
 tiny CLI; [herdr](https://github.com/herdrdev/herdr) carries only the wake-up.
@@ -18,6 +19,30 @@ tiny CLI; [herdr](https://github.com/herdrdev/herdr) carries only the wake-up.
  ╰────────────────────────────────────────────╯
  j/k move · f filter · c bodies · i write · e unblock · G follow · q quit
 ```
+
+## Do you need this?
+
+Claude Code can already message its own sessions. `ListAgents` shows your other
+Claude sessions and `SendMessage` delivers to them — natively, with no install,
+no typing into a TTY, and no shell permission prompt. **If both ends are Claude
+on one machine, use that.** It is better at the part it covers.
+
+What it does not cover, and what this is for:
+
+| | built-in | AGxChat |
+| --- | --- | --- |
+| Claude → Claude | yes, and better | yes |
+| Claude → Codex, Cursor, opencode, … | no — it only knows Claude sessions | yes |
+| History you can re-read tomorrow | the session's own transcript | an append-only log, survives restarts, deletable and recoverable |
+| A view of who is waiting on whom | none | thread list, attention markers, `agx status` |
+| Addressing | by session name | by name, repo, or topic, picking whichever pane is idle |
+| Why it did not arrive | it arrived or it did not | `deferred`, `stalled`, `target_blocked`, each with a reason |
+| Who asked for it | not modelled | `--for` / `--via`, auditable after the fact |
+
+The honest summary: for Claude-to-Claude the built-in wins and this is
+duplication. This exists because a mailbox reached over HTTP and a nudge typed
+into a TTY assume nothing about who is reading — which is the only way a Claude
+session and a Codex session talk at all.
 
 ## Install
 
@@ -72,6 +97,29 @@ source yourself the pull stops and says so rather than clobbering your work.
 Requires node 18+, git, and herdr on PATH. The installer clones to `~/.agxchat`,
 installs deps, and links `agx`. It never touches your repos; `agx bootstrap`
 does that, and only when you ask.
+
+### Mixed agents
+
+herdr ships integrations for `claude`, `codex`, `copilot`, `cursor`, `droid`,
+`opencode`, `devin` and others (`herdr integration install <name>`), and
+everything here works the same for all of them: delivery is text into a pane,
+replies are `agx reply`, and identity comes from the pane and its repo. Nothing
+in the mailbox is Claude-specific.
+
+Two things do differ:
+
+- **Each agent reads its own instruction file** and none reads another's, so
+  `agx rule install` writes to every one it finds — `~/.claude/CLAUDE.md`,
+  `~/.codex/AGENTS.md`, `~/.cursor/AGENTS.md`, `~/.config/opencode/AGENTS.md` —
+  and only where that agent's directory already exists. `agx rule targets`
+  shows which, and `--claude-only` narrows it.
+- **Lifecycle reporting varies.** herdr reports `idle`/`working`/`blocked` for
+  agents it has an integration for; anything else reads as `unknown`, which is
+  treated as deliverable. Deferral until idle degrades to immediate delivery
+  there, and `agx agents` shows each pane's kind so you can see which is which.
+
+Write mail accordingly: ask for what you need rather than how to get it, since
+the reader may not share your tools or your context.
 
 ### Teaching your sessions
 

@@ -65,7 +65,7 @@ fi
 # means installing something no session will ever reach for. AGX_NO_RULE=1
 # skips it.
 if [ "${AGX_NO_RULE:-0}" != "1" ]; then
-  python3 "$DIR/rule.py" install "${CLAUDE_CONFIG_DIR:-$HOME/.claude}/CLAUDE.md" "$DIR/claude-rule.md" \
+  python3 "$DIR/rule.py" install-all "$DIR/claude-rule.md" \
     | sed 's/^/  /' || say "could not write the rule — run: agx rule install"
 fi
 

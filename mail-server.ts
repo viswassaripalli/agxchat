@@ -385,10 +385,14 @@ function nudgeText(m: Mail): string {
   if (!m.inline) return `mail ${m.id} from ${m.from}${behalf} — call mail_inbox`;
   // Fallback for a session that has not wired up the mail MCP server yet: the
   // question rides in the TTY and the answer comes back the same way.
+  // `agx reply` is the one instruction that works for every agent: it only
+  // assumes a shell. MCP is nicer where it exists, curl is the last resort if
+  // agx is not on PATH.
   const reply =
-    `If you have the \`mail\` MCP server, reply with mail_reply({mail_id:"${m.id}", body:"..."}). ` +
-    `Otherwise reply by running: curl -s -X POST localhost:${PORT}/reply -H 'Content-Type: application/json' ` +
-    `-d '{"mail_id":"${m.id}","from":"${m.to}","body":"YOUR ANSWER HERE"}'`;
+    `Reply by running: agx reply ${m.id} "YOUR ANSWER HERE"  ` +
+    `(or mail_reply({mail_id:"${m.id}", body:"..."}) if you have the mail MCP server; ` +
+    `or curl -s -X POST localhost:${PORT}/reply -H 'Content-Type: application/json' ` +
+    `-d '{"mail_id":"${m.id}","from":"${m.to}","body":"..."}')`;
   return [
     `[agxchat ${m.id} from ${m.from}${behalf}] ${m.subject}`,
     m.body,
@@ -527,7 +531,14 @@ bus.subscribe((ev) => {
  *               flushed by flushDeferred() on the idle transition.
  *   blocked   → undeliverable; only a human or `pane send-keys esc` clears it.
  */
-async function deliver(m: Mail, opts: { silent?: boolean } = {}) {
+/**
+ * `blocked` is only trustworthy for agents whose lifecycle herdr models
+ * properly. A Codex pane waiting at its own prompt reports `blocked` too, and
+ * refusing to deliver there would make every non-Claude agent unreachable.
+ */
+const TRUSTED_BLOCKED = new Set(['claude']);
+
+async function deliver(m: Mail, opts: { silent?: boolean; loose?: boolean } = {}) {
   const agents = await listAgents(false);
   const session = registry.get(key(m.to));
   // A reply goes back to the terminal the question came from, not to whichever
@@ -543,13 +554,28 @@ async function deliver(m: Mail, opts: { silent?: boolean } = {}) {
   } else if (!pane?.paneId) {
     m.delivery = 'undeliverable';
     m.deliveryDetail = 'no live pane for target';
+  } else if (pane.status === 'blocked' && !TRUSTED_BLOCKED.has(pane.kind ?? '')) {
+    // Unknown lifecycle reporting: deliver and let the stall check judge.
+    await nudgeNow(m, pane.paneId, pane.status);
+    m.deliveryDetail = `pane ${pane.paneId} reports blocked, but ${pane.kind ?? 'that agent'} lifecycle is not modelled — delivered anyway`;
   } else if (pane.status === 'blocked') {
     // Blocked means a human must intervene before anything is read. If another
     // terminal in the same repo is free, it has the same code and the same
     // human in front of it, so send it there and say so.
-    const sibling = agents.filter(
-      (a) => a.paneId !== pane.paneId && a.cwd && a.cwd === pane.cwd && (a.status === 'idle' || a.status === 'done'),
-    );
+    // Only for a loosely-resolved target. If the sender named a pane or an
+    // identity, that is who they meant — handing it to a neighbour would answer
+    // as somebody else, and across agent kinds it would be a different tool
+    // entirely.
+    const sibling = opts.loose
+      ? agents.filter(
+          (a) =>
+            a.paneId !== pane.paneId &&
+            a.cwd &&
+            a.cwd === pane.cwd &&
+            a.kind === pane.kind &&
+            (a.status === 'idle' || a.status === 'done'),
+        )
+      : [];
     const alt = sibling.length ? await pickReadiest(sibling, agents) : null;
     if (alt?.paneId) {
       const identities = await paneIdentities(agents);
@@ -582,6 +608,9 @@ async function mergedAgents() {
     const id = a.paneId ? identities.get(a.paneId) : undefined;
     return {
       ...a,
+      // herdr reports the agent kind (claude, codex, cursor, ...). Worth
+      // showing: how you phrase a request depends on who is reading it.
+      kind: a.kind ?? 'unknown',
       name: id?.name ?? seeded?.name ?? a.name ?? a.paneId,
       // Topics belong to the canonical pane: "ask toolkit" must not fan out to
       // every terminal that happens to be open on the toolkit repo.
@@ -788,7 +817,7 @@ function buildMcpServer(identity: string | null) {
       await persist(m);
       bus.emit({ type: 'mail', mail: m });
 
-      const res = await deliver(m);
+      const res = await deliver(m, { loose: resolved.via === 'repo' || resolved.via === 'topic' });
       await persist(m);
       return ok({
         id: m.id,
@@ -1134,7 +1163,7 @@ app.post('/mail', async (req, res) => {
   mail.set(m.id, m);
   await persist(m);
   bus.emit({ type: 'mail', mail: m });
-  const out = await deliver(m);
+  const out = await deliver(m, { loose: resolved.via === 'repo' || resolved.via === 'topic' });
   await persist(m);
   const senderCwd = m.fromPaneId ? agents.find((a) => a.paneId === m.fromPaneId)?.cwd : null;
   const siblings = senderCwd ? agents.filter((a) => a.cwd === senderCwd).map((a) => a.paneId) : [];

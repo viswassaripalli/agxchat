@@ -1,10 +1,18 @@
 #!/usr/bin/env python3
-"""Install / remove the AGxChat block in a CLAUDE.md.
+"""Install / remove the AGxChat block in an agent's instruction file.
 
 A separate file rather than a heredoc inside `agx`: the block contains regex,
 newlines and quotes, and shell-embedded Python mangled every one of them.
 
-Usage: rule.py install|remove <claude-md> [<rule-source>]
+Every agent reads a different file, and none of them reads another's. Claude
+Code reads ~/.claude/CLAUDE.md; Codex reads ~/.codex/AGENTS.md; several others
+read a plain AGENTS.md. A rule installed in one of them teaches exactly one
+agent, which is why `targets` exists.
+
+Usage:
+  rule.py install|remove <file> [<rule-source>]
+  rule.py install-all|remove-all [<rule-source>]   every detected agent
+  rule.py targets                                  what would be written
 """
 import re
 import shutil
@@ -47,18 +55,60 @@ def remove(target: Path) -> str:
     return "removed the AGxChat block from " + str(target)
 
 
+# Where each agent looks for standing instructions. Written only when the
+# agent's own directory already exists: creating ~/.codex on a machine with no
+# Codex would be litter, not configuration.
+TARGETS = [
+    ("claude", Path.home() / ".claude", Path.home() / ".claude" / "CLAUDE.md"),
+    ("codex", Path.home() / ".codex", Path.home() / ".codex" / "AGENTS.md"),
+    ("cursor", Path.home() / ".cursor", Path.home() / ".cursor" / "AGENTS.md"),
+    ("opencode", Path.home() / ".config" / "opencode", Path.home() / ".config" / "opencode" / "AGENTS.md"),
+]
+
+
+def detected() -> list:
+    """Agents whose config directory exists on this machine."""
+    return [(name, target) for name, home, target in TARGETS if home.is_dir()]
+
+
 def main() -> int:
+    if len(sys.argv) < 2:
+        print(__doc__.strip(), file=sys.stderr)
+        return 2
+    action = sys.argv[1]
+
+    if action == "targets":
+        found = detected()
+        if not found:
+            print("no agent config directories found")
+            return 0
+        for name, target in found:
+            state = "installed" if target.exists() and BEGIN in target.read_text() else "not installed"
+            print(f"{name:10} {target}  ({state})")
+        return 0
+
+    if action in ("install-all", "remove-all"):
+        found = detected()
+        if not found:
+            print("no agent config directories found (looked for ~/.claude, ~/.codex, ~/.cursor, ~/.config/opencode)",
+                  file=sys.stderr)
+            return 1
+        source = Path(sys.argv[2]) if len(sys.argv) > 2 else Path(__file__).with_name("claude-rule.md")
+        for _, target in found:
+            print(install(target, source) if action == "install-all" else remove(target))
+        return 0
+
     if len(sys.argv) < 3:
         print(__doc__.strip(), file=sys.stderr)
         return 2
-    action, target = sys.argv[1], Path(sys.argv[2])
+    target = Path(sys.argv[2])
     if action == "install":
         source = Path(sys.argv[3]) if len(sys.argv) > 3 else Path(__file__).with_name("claude-rule.md")
         print(install(target, source))
     elif action == "remove":
         print(remove(target))
     else:
-        print("usage: rule.py install|remove <claude-md> [<rule-source>]", file=sys.stderr)
+        print("usage: rule.py install|remove <file> | install-all|remove-all | targets", file=sys.stderr)
         return 2
     return 0
 
