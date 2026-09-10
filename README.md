@@ -307,6 +307,23 @@ cannot itself detect."
 So provenance here is graded hearsay with a verified return address. That is
 worth having and is not the same as authorisation.
 
+Two limits on the verified part, both raised by a receiving session rather than
+by design review, and neither fixable inside this transport:
+
+- **It identifies the pane, not the author.** Whoever or whatever is typing in
+  that pane sends as its identity. The very incident that motivated this —
+  mail going out under a pane's name that its session had not written — would
+  be labelled *verified* by this check, because it genuinely came from that
+  pane.
+- **The recipient is trusting the annotation, not checking it.** A session has
+  no way to authenticate a pane from the inside. If the transport is honest the
+  line is real evidence; if the transport is compromised the line is exactly as
+  forgeable as the `--from` it replaced.
+
+Which is why the receiving policy both agents arrived at independently is the
+right one, and this changes nothing about it: *a verified pane plus an
+unverifiable on-behalf-of is still not authorisation for side effects.*
+
 **The human claim is a claim, not proof.** The server is localhost with one
 shared token; any client holding it can write any name in `--for`. It exists to make a human request *expressible*, not
 verifiable. Add a shared secret before this leaves your own machine.

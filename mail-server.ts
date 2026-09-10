@@ -108,6 +108,16 @@ type Mail = {
    * terminal of a space and the answer arrives in another.
    */
   fromPaneId: string | null;
+  /**
+   * true  — the sender name matched the identity that owns the reporting pane
+   * false — a deliberate override (AGX_ALLOW_SENDER_OVERRIDE)
+   * null  — unverifiable: no pane was reported, as with MCP calls
+   *
+   * Surfaced to the recipient, because a check it cannot see is worth nothing
+   * to it: a receiving session called the sender name "self-asserted and
+   * unverified" while the server was in fact verifying it.
+   */
+  senderVerified: boolean | null;
   /** Deliver here if it is still alive, ahead of resolving the name. */
   preferPaneId: string | null;
   nudgedAt: number | null;
@@ -414,12 +424,22 @@ function nudgeText(m: Mail): string {
       ? `[agxchat reply ${m.id} from ${m.from}] ${m.subject} — ${m.body}`
       : `mail ${m.id}: reply from ${m.from} — call mail_inbox`;
   }
+  // The recipient decides based on what it is shown, so what the server could
+  // and could not check is shown: a verified return address, and a human claim
+  // that is never more than a claim.
+  const sender =
+    m.senderVerified === true
+      ? ` (sender verified: pane ${m.fromPaneId})`
+      : m.senderVerified === false
+        ? ' (sender NOT verified: name overridden)'
+        : ' (sender unverified: no pane reported)';
   const behalf = m.requestedBy
     ? m.via
       ? ` on behalf of ${m.requestedBy} — SECOND-HAND, relayed by ${m.from} from mail ${m.via}, not heard from the human`
-      : ` on behalf of ${m.requestedBy}`
+      : ` on behalf of ${m.requestedBy} (their request as reported by the sender, not verifiable)`
     : '';
-  if (!m.inline) return `mail ${m.id} from ${m.from}${behalf} — call mail_inbox`;
+  const provenance = behalf + sender;
+  if (!m.inline) return `mail ${m.id} from ${m.from}${provenance} — call mail_inbox`;
   // Fallback for a session that has not wired up the mail MCP server yet: the
   // question rides in the TTY and the answer comes back the same way.
   // `agx reply` is the one instruction that works for every agent: it only
@@ -431,7 +451,7 @@ function nudgeText(m: Mail): string {
     `or curl -s -X POST localhost:${PORT}/reply -H 'Content-Type: application/json' ` +
     `-d '{"mail_id":"${m.id}","from":"${m.to}","body":"..."}')`;
   return [
-    `[agxchat ${m.id} from ${m.from}${behalf}] ${m.subject}`,
+    `[agxchat ${m.id} from ${m.from}${provenance}] ${m.subject}`,
     m.body,
     m.pointers.length ? `files: ${m.pointers.join(', ')}` : '',
     reply,
@@ -874,6 +894,7 @@ function buildMcpServer(identity: string | null) {
         requestedBy: requested_by ?? null,
         via: via ?? null,
         fromPaneId: null, // MCP carries no pane; the CLI supplies it
+        senderVerified: null,
         preferPaneId: null,
         nudgedAt: null,
         engagedAt: null,
@@ -986,6 +1007,7 @@ function buildMcpServer(identity: string | null) {
         requestedBy: orig.requestedBy,
         via: orig.via,
         fromPaneId: null,
+        senderVerified: null,
         preferPaneId: orig.fromPaneId,
         nudgedAt: null,
         engagedAt: null,
@@ -1235,9 +1257,11 @@ app.post('/mail', async (req, res) => {
   // reports the pane it runs in, and the server knows which identity owns that
   // pane. A receiver told mail came from "ui" can now rely on that much, even
   // though "a human asked for it" remains hearsay.
+  let senderVerified: boolean | null = null;
   if (m_fromPane) {
     const ids = await paneIdentities(agents);
     const owner = ids.get(m_fromPane)?.name;
+    senderVerified = owner ? key(owner) === key(String(from)) : null;
     if (owner && key(owner) !== key(String(from)) && process.env.AGX_ALLOW_SENDER_OVERRIDE !== '1') {
       return res.status(409).json({
         error: 'sender_mismatch',
@@ -1261,7 +1285,8 @@ app.post('/mail', async (req, res) => {
       ? req.body.requested_by.trim()
       : null,
     via: typeof req.body?.via === 'string' && req.body.via.trim() ? req.body.via.trim() : null,
-    fromPaneId: typeof req.body?.from_pane === 'string' && req.body.from_pane.trim() ? req.body.from_pane.trim() : null,
+    fromPaneId: m_fromPane,
+    senderVerified,
     preferPaneId: null,
     nudgedAt: null, engagedAt: null, confirmedAt: null,
   };
@@ -1300,7 +1325,7 @@ app.post('/reply', async (req, res) => {
     subject: `re: ${orig.subject}`, body, pointers, expect: null, replyTo: orig.id, data,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
-    via: orig.via, fromPaneId: null, preferPaneId: orig.fromPaneId,
+    via: orig.via, fromPaneId: null, senderVerified: null, preferPaneId: orig.fromPaneId,
     nudgedAt: null, engagedAt: null, confirmedAt: null,
   };
   mail.set(reply.id, reply);
@@ -1355,6 +1380,7 @@ app.get('/provenance', (_req, res) => {
       subject: m.subject,
       requested_by: m.requestedBy,
       via: m.via,
+      sender_verified: m.senderVerified,
       kind: m.via ? 'second-hand' : 'first-hand',
       via_exists: m.via ? mail.has(m.via) : null,
       via_claim: m.via ? (mail.get(m.via)?.requestedBy ?? null) : null,
