@@ -435,7 +435,17 @@ async function flushDeferred(paneId: string, status: string) {
  * decide. Nothing is re-nudged — a stalled agent needs a human, not more text.
  */
 const STALL_MS = Number(process.env.AGX_STALL_MS ?? process.env.HERDR_MAIL_STALL_MS ?? 60_000);
-const PERMISSION_MARKERS = /need permission|do you want|would you like|\ballow\b|requires approval|esc to (cancel|interrupt)/i;
+/**
+ * Phrases that only appear in an actual permission dialog. Deliberately narrow:
+ * a bare /allow/ matched the line "allow agx in settings" that a human had
+ * typed, and the mail was reported as parked on a prompt when the pane was
+ * simply idle. A wrong reason is worse than no reason — it sends you to fix
+ * something that is not broken.
+ */
+const PERMISSION_MARKERS =
+  /need permission|do you want to (proceed|continue|allow)|requires approval|no, and tell claude|❯\s*1\.\s*yes/i;
+/** Only the tail matters: scrollback holds every dialog you ever answered. */
+const PROMPT_TAIL_LINES = 8;
 
 /** A stall is a live guess, not a verdict: reading or engaging clears it. */
 function unstall(m: Mail, why: string) {
@@ -469,12 +479,14 @@ async function checkStalls() {
     } else if (pane.status === 'working') {
       continue; // it is thinking about it; not stalled
     } else {
-      const screen = m.targetPaneId ? await readPane(m.targetPaneId, 25).catch(() => '') : '';
-      const awaiting = PERMISSION_MARKERS.test(screen);
+      const screen = m.targetPaneId ? await readPane(m.targetPaneId, 40).catch(() => '') : '';
+      const tail = screen.split('\n').slice(-PROMPT_TAIL_LINES).join('\n');
+      const awaiting = PERMISSION_MARKERS.test(tail);
+      const waited = Math.round((now - m.nudgedAt!) / 1000);
       m.delivery = 'stalled';
       m.deliveryDetail = awaiting
-        ? `pane ${pane.paneId} looks parked on a prompt (reports "${pane.status}"); a human must clear it`
-        : `pane ${pane.paneId} is ${pane.status} but has not read mail ${m.id} in ${Math.round((now - m.nudgedAt!) / 1000)}s`;
+        ? `pane ${pane.paneId} is waiting on a permission prompt (it still reports "${pane.status}"); a human must answer it`
+        : `pane ${pane.paneId} is ${pane.status} but has not read mail ${m.id} in ${waited}s`;
     }
     await persist(m);
     bus.emit({ type: 'delivery', id: m.id, to: m.to, delivery: m.delivery, detail: m.deliveryDetail ?? undefined });
