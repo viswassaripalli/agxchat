@@ -1,9 +1,18 @@
 /**
- * herdr CLI adapter — verified against `herdr 0.7.1` (protocol 14).
+ * herdr CLI adapter.
  *
- * Divergences from PLAN.md, all confirmed by running the binary:
- *   · `herdr agent prompt` DOES NOT EXIST. Injection is `pane run <id> <cmd>`
- *     (text + Enter) or `pane send-text` + `pane send-keys enter`.
+ * Everything here is FEATURE-DETECTED, not assumed, because the CLI surface
+ * differs by version and this was first written against whatever was installed:
+ *
+ *   · 0.9.x ships `agent prompt <target> <text> [--wait]`, which submits the
+ *     text itself. When present it is used, and none of the hand-rolled
+ *     injection below runs.
+ *   · 0.7.1 has no `agent prompt`. There, injection is `pane send-text` plus
+ *     `pane send-keys enter`, and the Enter is dropped if the pane still has a
+ *     shell running — hence the read-back verification.
+ *
+ * Divergences from PLAN.md, confirmed by running the 0.7.1 binary (and NOT
+ * claims about herdr in general):
  *   · `cwd` and `foreground_cwd` live on the AGENT record in `agent list`, so no
  *     per-agent `pane get` fan-out is needed.
  *   · Agents carry no unique name: `agent` is the kind ("claude"). The stable
@@ -140,11 +149,36 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
  * swallowed, so the mail sat there unsent. So: type, submit, then read the pane
  * back and submit once more if the text is still sitting in the prompt.
  */
+/**
+ * Does this herdr have `agent prompt`? Asked once, from --help rather than a
+ * version comparison: a feature check survives version schemes changing.
+ */
+let agentPromptSupport: boolean | null = null;
+
+export async function supportsAgentPrompt(): Promise<boolean> {
+  if (agentPromptSupport !== null) return agentPromptSupport;
+  try {
+    const { stdout } = await exec(HERDR, ['agent', '--help']);
+    agentPromptSupport = /\bagent prompt\b/.test(stdout);
+  } catch {
+    agentPromptSupport = false;
+  }
+  return agentPromptSupport;
+}
+
 export async function nudge(paneId: string, text: string): Promise<void> {
   // Test affordance: exercise routing and the wait guards without writing into
   // a live agent's TTY.
   if (process.env.AGX_DRY_NUDGE ?? process.env.HERDR_MAIL_DRY_NUDGE === '1') {
     console.log(`[dry-nudge] ${paneId} <- ${text}`);
+    return;
+  }
+
+  // Prefer herdr's own delivery where it exists: it owns the terminal, so it
+  // knows when the text was accepted. Our send-text + Enter + read-back dance
+  // exists only because 0.7.1 has no such command.
+  if ((process.env.AGX_FORCE_TTY_NUDGE ?? '0') !== '1' && (await supportsAgentPrompt())) {
+    await exec(HERDR, ['agent', 'prompt', paneId, text]);
     return;
   }
 

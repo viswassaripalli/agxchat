@@ -339,13 +339,118 @@ a session that has not wired up the mail MCP server yet. It breaks the
 payload-by-pointer rule on purpose and is the only mode that works with zero
 setup on the receiving side.
 
+## Prior art, and where this loses
+
+This is a crowded problem. Everything below already does cross-agent messaging
+between Claude Code and Codex today:
+
+| | Transport | Prerequisites |
+| --- | --- | --- |
+| [agent-bus](https://github.com/MustaphaSteph/agent-bus) | MCP tools over one SQLite file, no daemon | an MCP-speaking agent |
+| [agmsg](https://github.com/fujibee/agmsg) | shared SQLite, Bash | bash + sqlite |
+| [agent-message-queue](https://github.com/avivsinai/agent-message-queue) | Maildir-style files | a filesystem |
+| Claude Code's own `ListAgents` / `SendMessage` | native | nothing, but Claude-only |
+| **AGxChat** | HTTP mailbox + text typed into a terminal | Node **and herdr** and agents already in panes |
+
+Read that last column honestly: every alternative asks for a runtime, and this
+asks for a specific terminal multiplexer as well. That is the worst
+prerequisite in the table, it is self-inflicted by choosing TTY injection as
+the delivery mechanism, and it is the main reason to pick something else.
+
+What is genuinely different here, rather than merely different-looking:
+
+- **It reaches an agent with no MCP support at all**, because it types into the
+  terminal. An MCP-based bus needs the receiving agent to speak MCP; a
+  file-based queue needs it to poll. Delivery here is a nudge the agent cannot
+  miss and does not have to be built for.
+- **It says why a message did not land** — `deferred`, `stalled` with the pane
+  state that caused it, `target_blocked` — because it can see the terminal. A
+  queue knows only whether a row was read.
+- **It distinguishes a first-hand human request from a relayed one** (`--for`
+  vs `--via`). I have not found that modelled elsewhere, and it came out of a
+  real incident, not a design session — see Provenance below.
+
+If you want a durable cross-agent bus with the fewest moving parts, use
+agent-bus. Use this if you are already living in herdr panes and want delivery
+diagnostics and provenance.
+
+## Security
+
+**Anything that can reach `127.0.0.1:7777` can type arbitrary text into any of
+your live agent panes.** Those panes hold sessions with file-write and shell
+access, so the bus is a prompt-injection path into them, and by extension a
+local code-execution path. That is the headline risk, not a footnote.
+
+There is no authentication. A `POST /mail` from any process on the machine —
+any script, any dependency's postinstall, any browser page that can reach
+localhost — is delivered as a nudge into a real agent's terminal. `requested_by`
+is a self-asserted string and `via` only marks a relay as second-hand; neither
+is proof of anything, and an attacker fills them in as easily as an agent does.
+
+What is actually in place: the listener binds `127.0.0.1` only, mail bodies are
+capped, and payloads travel as file paths rather than inline content. What is
+not: any authentication, any authorisation, any rate limit, any audit of who
+opened the socket. Do not run this on a shared or multi-user machine, do not
+expose the port, and add a shared-secret header before it leaves your own
+laptop.
+
+## What is durable, and what is not
+
+Precisely, because an earlier version of this file said both "the mailbox is a
+`Map`" and "the log replays on boot":
+
+| | Where it lives | Survives a restart |
+| --- | --- | --- |
+| Messages, their bodies, delivery state | `Map` in memory, **and** appended to `.run/mail.jsonl` on every create and mutation | yes — replayed on boot, last write per id wins |
+| Deletions | appended as a tombstone; replay drops the id | yes |
+| Session registry (names, topics, panes) | memory, rebuilt from `agents.json` at boot | rebuilt, not restored |
+| Wait graph (who is blocked on whom) | memory only | no — a blocking `mail_wait` dies with the process |
+| Read/engaged markers | in the message record, so persisted | yes |
+
+So: mail is durable, the coordination state around it is not. The weakness note
+claiming otherwise was written before the JSONL store existed and was left
+stale for a dozen commits — the contradiction was real and this table replaces
+it.
+
+Two caveats that keep it honest: writes are appends with no `fsync`, so a
+machine that loses power mid-write can leave a torn last line (it is skipped on
+replay), and compaction past 5000 lines rewrites the log from live records
+only, which is the one operation that makes a delete unrecoverable.
+
 ## Known weaknesses
 
-Unchanged from PLAN.md, and one confirmed the hard way: the mailbox is a `Map`,
-so restarting the server loses the queue — a live send was lost to exactly that
-during this build. Also: blocked agents stall delivery and only a human clears
-them; no guaranteed delivery semantics, since the receiver is an LLM deciding
-what to attend to; localhost and unauthenticated.
+- **Blocked agents stall delivery** and only a human clears them.
+- **No guaranteed delivery.** The receiver is an LLM deciding what to attend
+  to; a nudge is a suggestion, not a call.
+- **No tests.** Cycle detection, tombstone replay, deferred flushing and
+  submit verification were each verified once by hand against live sessions and
+  are documented here as observations. There is no suite that re-checks them,
+  so treat every behavioural claim as "seen working", not "proven".
+- **herdr is load-bearing.** Delivery is text into a terminal, so this needs
+  Node *and* herdr *and* agents already running in panes. Competing buses need
+  only a runtime. That prerequisite is self-inflicted by the delivery
+  mechanism.
+- **Version-coupled.** See below.
+- **Localhost, unauthenticated** — see Security above.
 
-Not built (explicitly out of scope for tonight): `MailConversation.jsx` and
-`MailDebugger.jsx` browser views, the fork (`herdrx`), team packaging.
+Not built (explicitly out of scope): the browser views, the herdr fork, team
+packaging.
+
+## Which herdr this was measured against
+
+Everything in this file marked as measured was measured against **herdr 0.7.1**,
+which was what happened to be installed. The CLI surface moves:
+
+| | 0.7.1 | 0.9.x |
+| --- | --- | --- |
+| Submitting a prompt to an agent | no such command — hence `pane send-text` + `send-keys enter` + read-back | `agent prompt <target> <text> [--wait] [--until STATUS]` |
+| Starting an agent | `agent start <name> [--cwd PATH] -- <argv>` | `agent start <name> --kind KIND --pane ID` |
+| Waiting on output | `wait output` | `pane wait-output` |
+
+`nudge()` therefore **feature-detects**: if `agent prompt` is present it is used
+and none of the hand-rolled injection runs; otherwise the 0.7.1 path applies.
+`AGX_FORCE_TTY_NUDGE=1` forces the old path. The submit-verification read-back
+solves a problem that does not exist on 0.9.x.
+
+The `/btw` finding is different in kind: that is Claude Code behaviour, not
+herdr's, and does not move with herdr versions.
