@@ -201,27 +201,44 @@ reply comes back through `mail_reply` instead of curl.
 to **on** when the sender resolves to a live pane (a real session wants its
 answer) and **off** for the TUI and scripts (which read the mailbox instead).
 
-## What was verified against the real binary (herdr 0.7.1)
+## How delivery works, and what was measured
 
-PLAN.md was written against a different herdr. These are measured, not assumed:
+Delivery has two paths, chosen by asking the installed herdr what it can do
+rather than by trusting a version number:
 
-| PLAN.md | Reality on 0.7.1 |
+**Native (herdr 0.9+).** `herdr agent prompt <pane> <text>` submits the text
+itself. herdr owns the terminal, so it knows when the text was accepted, and
+none of the code below runs. This is the path on a current herdr.
+
+**Typed (herdr 0.7.x).** No such command exists there, so the text goes in as
+`pane send-text` followed by `pane send-keys enter`. That Enter was observed
+being dropped on a pane that still had a shell running — the mail sat in the
+prompt box, unsent — so this path types, submits, reads the pane back, and
+submits once more if the text is still sitting there. Forced with
+`AGX_FORCE_TTY_NUDGE=1`.
+
+The check is a feature probe of `agent --help`, and it matches two different
+help formats: 0.7.x prints full signatures, 0.9 prints a Commands block of bare
+names. Matching only one of them reported "not supported" on the version that
+had the command, and kept typing keystrokes for no reason.
+
+### Findings behind the design
+
+Measured by running the binaries, not read from docs. Version-specific where
+marked; PLAN.md had been written against 0.9 while 0.7.1 was what was
+installed, which is where most of these disagreements came from:
+
+| Assumption | What was actually true |
 | --- | --- |
-| `herdr agent prompt <name> "…"` | does not exist. Injection is `pane send-text` + `pane send-keys enter` |
-| `cwd` lives on the pane | `cwd` **and** `foreground_cwd` are on the agent record — no `pane get` fan-out |
-| agents have no name | `name` **is** on the agent record once set by `agent start <name>` / `agent rename` |
-| `working` → deliver via `/btw` | **`/btw` has no tools.** It answers, and does not derail the main task, but reports *"No tools here. Cannot run command."* — it can never reach `mail_inbox` |
-| `agent prompt --wait` | `herdr agent wait <target> --status`, `herdr wait agent-status` |
+| `agent prompt` is always there | **0.9 yes, 0.7.1 no** — hence the feature probe and two paths |
+| `cwd` lives on the pane | `cwd` **and** `foreground_cwd` are on the agent record — no `pane get` fan-out (0.7.1, still true on 0.9) |
+| agents have no name | `name` **is** on the agent record once set by `agent start` / `agent rename` |
+| deliver to a busy agent via `/btw` | **`/btw` has no tools.** It answers, and does not derail the main task, but reports *"No tools here. Cannot run command."* — so it can never reach `mail_inbox`. This is Claude Code behaviour and does not move with herdr versions |
+| a pane reports `blocked` when it needs a human | a Claude pane on a permission prompt reports **`done`**; a Codex pane waiting at its own prompt reports **`blocked`** while perfectly reachable. Lifecycle is only trusted for agents herdr models |
 
-Two consequences, both implemented:
-
-1. **`working` defers.** Mail for a busy target is held at `deferred` and the
-   nudge fires from the 1s poll on the target's next idle/done transition.
-   `/btw` is not used for delivery at all.
-2. **The nudge verifies itself.** `pane run` alone was observed dropping the
-   Enter on a pane that still had a shell running — the mail sat in the prompt
-   box, unsent. `nudge()` now types, submits, reads the pane back, and submits
-   once more if the text is still sitting there.
+The `/btw` finding is the load-bearing one: it is why mail for a busy target is
+held at `deferred` and flushed by the 1s poll on the next idle transition,
+rather than delivered as a side question.
 
 ## Delivery states
 
@@ -241,9 +258,18 @@ reports **`done`**, not `blocked`. Mail to it gets `nudged_idle` and then goes
 nowhere, silently.
 
 So delivery is confirmed by inference, not by dialog text: a mail that was
-nudged, has neither been read nor answered after `HERDR_MAIL_STALL_MS`
-(default 60s), and whose target is **not** `working`, is flagged `stalled`. Pane
-text is read only to explain *why* (`looks parked on a prompt`), never to decide.
+nudged, has neither been read, engaged with, nor answered after `AGX_STALL_MS`
+(default 60s), and whose target is **not** `working`, is flagged `stalled`.
+
+The *reason* comes from `herdr agent explain --json`, which reports
+`visible_blocker` and the id of the detection rule that matched
+(`bash_permission_prompt`, `mcp_elicitation_prompt`, `live_prompt_box`, …).
+herdr maintains that manifest per agent kind and refreshes it remotely, so it
+already knows what a Claude permission prompt and a Codex approval dialog look
+like, and keeps knowing when those UIs change. An earlier version guessed with
+a local regex and reported an idle pane as parked on a prompt because the word
+"allow" appeared in scrollback; that regex survives only as a fallback for
+herdr versions without `explain`.
 A stalled target that starts working un-stalls itself. Nothing is ever re-nudged
 — a stalled agent needs a human, not more text. `GET /health` lists them.
 
@@ -426,19 +452,17 @@ packaging.
 
 ## Which herdr this was measured against
 
-Everything in this file marked as measured was measured against **herdr 0.7.1**,
-which was what happened to be installed. The CLI surface moves:
+The CLI surface moves between versions, so everything above says which one it
+applies to. For reference:
 
 | | 0.7.1 | 0.9.x |
 | --- | --- | --- |
-| Submitting a prompt to an agent | no such command — hence `pane send-text` + `send-keys enter` + read-back | `agent prompt <target> <text> [--wait] [--until STATUS]` |
+| Submitting a prompt | absent — `pane send-text` + `send-keys enter` + read-back | `agent prompt <target> <text> [--wait] [--until STATUS]` |
 | Starting an agent | `agent start <name> [--cwd PATH] -- <argv>` | `agent start <name> --kind KIND --pane ID` |
 | Waiting on output | `wait output` | `pane wait-output` |
+| `agent --help` format | full signatures | Commands block of bare names |
 
-`nudge()` therefore **feature-detects**: if `agent prompt` is present it is used
-and none of the hand-rolled injection runs; otherwise the 0.7.1 path applies.
-`AGX_FORCE_TTY_NUDGE=1` forces the old path. The submit-verification read-back
-solves a problem that does not exist on 0.9.x.
-
-The `/btw` finding is different in kind: that is Claude Code behaviour, not
-herdr's, and does not move with herdr versions.
+Nothing here compares versions at runtime: the adapter probes for the command
+it wants and falls back. A newer herdr with a different help format would need
+the probe widened again, which is a known brittleness of asking `--help`
+instead of trying the command.
