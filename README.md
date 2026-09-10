@@ -287,42 +287,43 @@ the person who asked. It rides in the nudge itself
 before opening anything, and `agx inbox` marks mail with no named human
 as `(no human named — bot-initiated)`.
 
-### What is verified, and what is not
+### What is verified: nothing
 
-Two different questions hide inside "where did this come from", and they have
-different answers:
+Three questions hide inside "where did this come from", and the honest answer
+to all three is the same:
 
-| | Verified? |
+| | Checked? |
 | --- | --- |
-| **Which pane sent it** | **Yes.** The CLI reports its own pane, the server knows which identity owns that pane, and a mismatch is refused with `sender_mismatch`. Overridable only with `AGX_ALLOW_SENDER_OVERRIDE=1` |
-| **Whether a human asked** | **No.** `--for` is a string the sender types |
-| **Whether the sender heard it from the human** | **No.** `--via` is voluntary, and *its absence proves nothing* |
+| Whether a human asked | No — `--for` is a string the sender types |
+| Whether the sender heard it from that human | No — `--via` is voluntary, and its absence proves nothing |
+| Which pane sent it | **No.** The pane id is self-reported over HTTP |
 
-That last row is the flag's real limit, put best by a session that received the
-pair: "`--via` being present tells me the sender is being scrupulous, while its
-absence tells me nothing — an agent relaying a claim it never heard from a human
-can simply omit it, which is the failure mode the flag exists to prevent and
-cannot itself detect."
+The third row was briefly claimed as verified, and that was wrong. The server
+compares the claimed sender against the claimed pane, which catches an honest
+mistake and nothing else: a client that lies about both at once satisfies it.
+Demonstrated — a `POST` claiming another session's name *and* its pane was
+accepted, delivered, labelled *"sender verified"*, and its reply addressed to
+the impersonated session's real pane. A false assurance is worse than none, so
+the annotation now reads `(sender self-reports pane w6:p1; NOT verified —
+forgeable)`.
 
-So provenance here is graded hearsay with a verified return address. That is
-worth having and is not the same as authorisation.
+Real verification means the OS naming the caller — peer credentials over a unix
+socket, then PID to pane — because any shared secret on this machine is
+readable by anything running as you. That is not built.
 
-Two limits on the verified part, both raised by a receiving session rather than
-by design review, and neither fixable inside this transport:
+Two things the receiving sessions said about this, which are the actual
+takeaway:
 
-- **It identifies the pane, not the author.** Whoever or whatever is typing in
-  that pane sends as its identity. The very incident that motivated this —
-  mail going out under a pane's name that its session had not written — would
-  be labelled *verified* by this check, because it genuinely came from that
-  pane.
-- **The recipient is trusting the annotation, not checking it.** A session has
-  no way to authenticate a pane from the inside. If the transport is honest the
-  line is real evidence; if the transport is compromised the line is exactly as
-  forgeable as the `--from` it replaced.
+> I am trusting the annotation, not verifying anything myself. I have no
+> independent way to authenticate a pane from inside this session, so if the
+> transport is honest this is real evidence, and if it is compromised the line
+> is as forgeable as `--from` was.
 
-Which is why the receiving policy both agents arrived at independently is the
-right one, and this changes nothing about it: *a verified pane plus an
-unverifiable on-behalf-of is still not authorisation for side effects.*
+> It identifies the pane a mail came from, not who composed it in that pane.
+
+The second one lands hardest: the incident that motivated all of this — mail
+sent under a pane's name that its session had not written — would be labelled
+consistent by this check, because it really did come from that pane.
 
 **The human claim is a claim, not proof.** The server is localhost with one
 shared token; any client holding it can write any name in `--for`. It exists to make a human request *expressible*, not

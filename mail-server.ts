@@ -109,15 +109,17 @@ type Mail = {
    */
   fromPaneId: string | null;
   /**
-   * true  — the sender name matched the identity that owns the reporting pane
-   * false — a deliberate override (AGX_ALLOW_SENDER_OVERRIDE)
-   * null  — unverifiable: no pane was reported, as with MCP calls
+   * Whether the claimed sender is CONSISTENT with the pane the client reported
+   * being in. Not proof of anything: the pane id is self-reported over HTTP, so
+   * a client that lies about both fields at once satisfies this check. Tested —
+   * a POST claiming another session's name and pane was accepted and labelled
+   * verified, which is worse than no label at all.
    *
-   * Surfaced to the recipient, because a check it cannot see is worth nothing
-   * to it: a receiving session called the sender name "self-asserted and
-   * unverified" while the server was in fact verifying it.
+   * Real verification needs the OS to name the caller: peer credentials over a
+   * unix socket, then PID → pane. Until then this only catches an honest
+   * mistake, such as a stale --from.
    */
-  senderVerified: boolean | null;
+  senderConsistent: boolean | null;
   /** Deliver here if it is still alive, ahead of resolving the name. */
   preferPaneId: string | null;
   nudgedAt: number | null;
@@ -427,12 +429,14 @@ function nudgeText(m: Mail): string {
   // The recipient decides based on what it is shown, so what the server could
   // and could not check is shown: a verified return address, and a human claim
   // that is never more than a claim.
+  // Deliberately not the word "verified": the pane id is self-reported, so
+  // this is the sender's own account of itself agreeing with itself.
   const sender =
-    m.senderVerified === true
-      ? ` (sender verified: pane ${m.fromPaneId})`
-      : m.senderVerified === false
-        ? ' (sender NOT verified: name overridden)'
-        : ' (sender unverified: no pane reported)';
+    m.senderConsistent === true
+      ? ` (sender self-reports pane ${m.fromPaneId}; NOT verified — forgeable)`
+      : m.senderConsistent === false
+        ? ' (sender name overridden — inconsistent with its pane)'
+        : ' (sender reported no pane)';
   const behalf = m.requestedBy
     ? m.via
       ? ` on behalf of ${m.requestedBy} — SECOND-HAND, relayed by ${m.from} from mail ${m.via}, not heard from the human`
@@ -894,7 +898,7 @@ function buildMcpServer(identity: string | null) {
         requestedBy: requested_by ?? null,
         via: via ?? null,
         fromPaneId: null, // MCP carries no pane; the CLI supplies it
-        senderVerified: null,
+        senderConsistent: null,
         preferPaneId: null,
         nudgedAt: null,
         engagedAt: null,
@@ -1007,7 +1011,7 @@ function buildMcpServer(identity: string | null) {
         requestedBy: orig.requestedBy,
         via: orig.via,
         fromPaneId: null,
-        senderVerified: null,
+        senderConsistent: null,
         preferPaneId: orig.fromPaneId,
         nudgedAt: null,
         engagedAt: null,
@@ -1257,14 +1261,15 @@ app.post('/mail', async (req, res) => {
   // reports the pane it runs in, and the server knows which identity owns that
   // pane. A receiver told mail came from "ui" can now rely on that much, even
   // though "a human asked for it" remains hearsay.
-  let senderVerified: boolean | null = null;
+  let senderConsistent: boolean | null = null;
   if (m_fromPane) {
     const ids = await paneIdentities(agents);
     const owner = ids.get(m_fromPane)?.name;
-    senderVerified = owner ? key(owner) === key(String(from)) : null;
+    senderConsistent = owner ? key(owner) === key(String(from)) : null;
     if (owner && key(owner) !== key(String(from)) && process.env.AGX_ALLOW_SENDER_OVERRIDE !== '1') {
       return res.status(409).json({
         error: 'sender_mismatch',
+        note: 'a consistency check, not an authenticity one — see README Security',
         claimed: from,
         pane: m_fromPane,
         pane_identity: owner,
@@ -1286,7 +1291,7 @@ app.post('/mail', async (req, res) => {
       : null,
     via: typeof req.body?.via === 'string' && req.body.via.trim() ? req.body.via.trim() : null,
     fromPaneId: m_fromPane,
-    senderVerified,
+    senderConsistent,
     preferPaneId: null,
     nudgedAt: null, engagedAt: null, confirmedAt: null,
   };
@@ -1325,7 +1330,7 @@ app.post('/reply', async (req, res) => {
     subject: `re: ${orig.subject}`, body, pointers, expect: null, replyTo: orig.id, data,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
-    via: orig.via, fromPaneId: null, senderVerified: null, preferPaneId: orig.fromPaneId,
+    via: orig.via, fromPaneId: null, senderConsistent: null, preferPaneId: orig.fromPaneId,
     nudgedAt: null, engagedAt: null, confirmedAt: null,
   };
   mail.set(reply.id, reply);
@@ -1380,7 +1385,7 @@ app.get('/provenance', (_req, res) => {
       subject: m.subject,
       requested_by: m.requestedBy,
       via: m.via,
-      sender_verified: m.senderVerified,
+      sender_consistent: m.senderConsistent,
       kind: m.via ? 'second-hand' : 'first-hand',
       via_exists: m.via ? mail.has(m.via) : null,
       via_claim: m.via ? (mail.get(m.via)?.requestedBy ?? null) : null,
