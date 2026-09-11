@@ -391,14 +391,39 @@ function App() {
     setMode('browse');
   };
 
-  /** Deletes the whole thread: a half-deleted exchange is worse than either. */
+  /**
+   * Deletes the whole thread: a half-deleted exchange is worse than either.
+   *
+   * Retries once, because the common failure is the server restarting while a
+   * key is pressed, and reports network failure as what it is — "fetch failed"
+   * told nobody that the server was simply not there.
+   */
   const removeThread = async (t: Thread) => {
+    const attempt = async () =>
+      fetch(`${BASE}/thread/${encodeURIComponent(t.root.id)}`, { method: 'DELETE', headers: AUTH });
     try {
-      const r = await fetch(`${BASE}/thread/${encodeURIComponent(t.root.id)}`, { method: 'DELETE', headers: AUTH });
-      const j: any = await r.json();
-      setNote(r.ok ? `deleted ${j.removed.length} message${j.removed.length === 1 ? '' : 's'}` : `delete failed: ${j.error}`);
-    } catch (err) {
-      setNote(`delete failed: ${String(err)}`);
+      let r: Response;
+      try {
+        r = await attempt();
+      } catch {
+        await new Promise((res) => setTimeout(res, 700));
+        r = await attempt();
+      }
+      const j: any = await r.json().catch(() => ({}));
+      if (r.ok) {
+        setNote(`deleted ${j.removed?.length ?? 0} message${j.removed?.length === 1 ? '' : 's'}`);
+        // Do not wait for the event: the row goes now, so the key feels acted on.
+        const gone = new Set<string>(j.removed ?? []);
+        setMail((ms) => ms.filter((m) => !gone.has(m.id)));
+      } else if (r.status === 404) {
+        // Already gone — usually a row left over from before a purge.
+        setNote('that thread was already deleted; refreshing');
+        setMail((ms) => ms.filter((m) => m.id !== t.root.id));
+      } else {
+        setNote(`delete failed: ${j.error ?? r.status}${j.hint ? ` — ${j.hint}` : ''}`);
+      }
+    } catch {
+      setNote(`cannot reach the server on ${BASE} — is it running? (agx serve)`);
     }
     setConfirmDelete(null);
     setCursor((c) => Math.max(0, c - 1));
