@@ -84,6 +84,7 @@ it to apply.
 | `agx deleted` / `restore <id>` | list what delete hid, bring one back |
 | `agx provenance` | audit every claim of human authority |
 | `agx bootstrap [--write]` | wire `.mcp.json` into your repos (dry run by default) |
+| `agx spawned` / `kill <name>\|--all` / `resume <a> <b>` | sessions agx started; close them; let a paused pair talk again |
 | `agx update` / `uninstall --yes` | pull changes; remove everything |
 
 Sending from another session needs nothing installed there — every agent has a
@@ -153,6 +154,41 @@ every terminal open on that repo. `repo` is the git root's name, not
 `basename(cwd)`: a session in `<repo>/ui` would otherwise advertise itself as
 `ui`. A reply goes back to the pane that sent the question, not to whichever pane
 is canonical.
+
+## Runaway loops
+
+Every nudge asks the recipient to reply, and a reply nudges the sender back. Two
+agents that each keep answering will do so until someone notices the token bill:
+no participant has a reason to stop, because each message is individually
+reasonable.
+
+Three caps stop it, and a trip pauses the pair rather than killing anything:
+
+| | default | env |
+| --- | --- | --- |
+| Messages in one thread | 24 | `AGX_MAX_THREAD` |
+| Messages between a pair in 5 minutes | 12 | `AGX_MAX_PAIR`, `AGX_PAIR_WINDOW_MS` |
+| Unbroken back-and-forth between a pair | 10 minutes | `AGX_MAX_PAIR_MINUTES` |
+
+The duration cap exists because counts alone miss the slow loop — two agents
+answering each other every four minutes never trip a rate limit and still burn
+an afternoon.
+
+On a trip the send is refused with `runaway_guard`, and whoever started those
+sessions gets a message naming what happened, how far the thread got, the last
+few exchanges, and the two options:
+
+```
+Paused: web and tests are looping
+web and tests have exchanged 12 messages in the last 5 minutes (limit 12).
+Thread is 8 messages. Last exchanges — web: turn 5 | tests: turn 6 …
+Your options: let them continue (agx resume web tests), or stop them (agx kill --all).
+```
+
+`agx spawned` lists sessions this machine started and who asked for them,
+`agx kill <name>` or `--all` closes them, and `agx resume <a> <b>` lets a paused
+pair carry on. Sessions you started yourself are never killed by `--all`; only
+ones `agx open` / `agx spawn` created.
 
 ## One exchange, one thread
 
