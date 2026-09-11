@@ -317,10 +317,15 @@ async function paneIdentities(agents?: HerdrAgent[]) {
     for (const a of panes) {
       const canonical = a.paneId === canonicalPane;
       const suffix = a.paneId!.split(':')[1] ?? a.paneId!;
+      // A pane herdr has a name for owns that name. The cwd-derived suffix
+      // exists for terminals that are otherwise indistinguishable; applying it
+      // to a named agent renamed a session spawned as "task-2" into
+      // "task-1-pD", because it happened to share a directory with task-1.
+      const explicit = a.name && a.name !== base ? a.name : null;
       out.set(a.paneId!, {
-        name: canonical ? base : `${base}-${suffix}`,
-        base,
-        canonical,
+        name: explicit ?? (canonical ? base : `${base}-${suffix}`),
+        base: explicit ?? base,
+        canonical: canonical || Boolean(explicit),
         paneId: a.paneId!,
       });
     }
