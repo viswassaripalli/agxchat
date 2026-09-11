@@ -230,6 +230,181 @@ const key = (name: string) => name.trim().toLowerCase();
 const MAX_SUBJECT = 160;
 
 /**
+ * Runaway guards.
+ *
+ * Every nudge asks the recipient to reply, and a reply nudges the sender back.
+ * Two agents that each keep answering will do so until someone notices the
+ * token bill — no participant has a reason to stop, because each message is
+ * individually reasonable. These caps are the thing that stops it, and they
+ * are deliberately blunt: a conversation that needs more than this many turns
+ * between two machines needs a human in it.
+ */
+const MAX_THREAD_MESSAGES = Number(process.env.AGX_MAX_THREAD ?? 24);
+const PAIR_WINDOW_MS = Number(process.env.AGX_PAIR_WINDOW_MS ?? 5 * 60 * 1000);
+const MAX_PAIR_IN_WINDOW = Number(process.env.AGX_MAX_PAIR ?? 12);
+/**
+ * How long two agents may keep a single exchange going. Message counts alone
+ * miss the slow loop — two agents that answer each other every four minutes
+ * never trip a rate limit and still burn an afternoon.
+ */
+const MAX_PAIR_DURATION_MS = Number(process.env.AGX_MAX_PAIR_MINUTES ?? 10) * 60 * 1000;
+/** A gap longer than this ends the burst: the next message starts a new one. */
+const BURST_GAP_MS = Number(process.env.AGX_BURST_GAP_MINUTES ?? 3) * 60 * 1000;
+
+/** How long the current unbroken exchange between two identities has run. */
+function burstDuration(from: string, to: string): { ms: number; count: number } {
+  const between = [...mail.values()]
+    .filter(
+      (m) =>
+        (key(m.from) === key(from) && key(m.to) === key(to)) || (key(m.from) === key(to) && key(m.to) === key(from)),
+    )
+    .sort((a, b) => a.createdAt - b.createdAt);
+  if (between.length === 0) return { ms: 0, count: 0 };
+
+  // Walk backwards while messages are close together; that is the live burst.
+  let start = between.length - 1;
+  for (let i = between.length - 1; i > 0; i--) {
+    if (between[i].createdAt - between[i - 1].createdAt > BURST_GAP_MS) break;
+    start = i - 1;
+  }
+  const first = between[start].createdAt;
+  return { ms: Date.now() - first, count: between.length - start };
+}
+
+/**
+ * Sessions this machine started via `agx open` / `agx spawn`, and who asked for
+ * them. Written by the CLI; read here so a runaway between two spawned agents
+ * can be reported to the person who spawned them rather than to nobody.
+ */
+type SpawnedSession = { name: string; pane: string; kind: string; cwd: string; by: string; at: number };
+
+async function readSpawned(): Promise<SpawnedSession[]> {
+  try {
+    return JSON.parse(await readFile('.run/spawned.json', 'utf8'));
+  } catch {
+    return [];
+  }
+}
+
+/** Pairs already reported, so a loop is announced once rather than per message. */
+const announced = new Map<string, number>();
+
+/**
+ * Tell whoever started these sessions that they are talking in circles, what
+ * they got through first, and what their options are. A guard that silently
+ * refuses leaves two agents retrying and a human none the wiser.
+ */
+async function announcePause(from: string, to: string, detail: string, anchor: string | null) {
+  const pairKey = [key(from), key(to)].sort().join('|');
+  const last = announced.get(pairKey) ?? 0;
+  if (Date.now() - last < PAIR_WINDOW_MS) return;
+  announced.set(pairKey, Date.now());
+
+  const spawned = await readSpawned();
+  const owner = spawned.find((sp) => key(sp.name) === key(from) || key(sp.name) === key(to))?.by;
+  if (!owner) return; // nobody spawned these; nobody to tell
+
+  const root = anchor ? threadSize(anchor) : 0;
+  const recent = [...mail.values()]
+    .filter((m) => (key(m.from) === key(from) && key(m.to) === key(to)) || (key(m.from) === key(to) && key(m.to) === key(from)))
+    .sort((a, b) => b.createdAt - a.createdAt)
+    .slice(0, 4)
+    .reverse();
+  const transcript = recent.map((m) => `${m.from}: ${m.body.replace(/\s+/g, ' ').slice(0, 90)}`).join(' | ');
+
+  const m: Mail = {
+    id: newId(),
+    kind: 'note',
+    from: 'agxchat',
+    to: owner,
+    subject: `Paused: ${from} and ${to} are looping`,
+    body:
+      `${detail} Thread is ${root} messages. Last exchanges — ${transcript}. ` +
+      `Your options: let them continue (agx resume ${from} ${to}), or stop them (agx kill --all).`,
+    pointers: [],
+    expect: 'continue or kill',
+    replyTo: null,
+    data: null,
+    createdAt: Date.now(),
+    readAt: null,
+    delivery: 'queued',
+    deliveryDetail: null,
+    targetPaneId: null,
+    inline: true,
+    notify: true,
+    requestedBy: null,
+    via: null,
+    fromPaneId: null,
+    senderConsistent: null,
+    senderObserved: false,
+    preferPaneId: null,
+    nudgedAt: null,
+    engagedAt: null,
+    confirmedAt: null,
+  };
+  mail.set(m.id, m);
+  await persist(m);
+  bus.emit({ type: 'mail', mail: m });
+  await deliver(m);
+  await persist(m);
+}
+
+/** Every message in the thread `id` belongs to, however deep the chain. */
+function threadSize(anyId: string | null): number {
+  if (!anyId) return 0;
+  const rootOf = (m: Mail): string => {
+    let cur = m;
+    for (let hop = 0; hop < 30 && cur.replyTo; hop++) {
+      const parent = mail.get(cur.replyTo);
+      if (!parent) break;
+      cur = parent;
+    }
+    return cur.id;
+  };
+  const start = mail.get(anyId);
+  if (!start) return 0;
+  const root = rootOf(start);
+  return [...mail.values()].filter((m) => rootOf(m) === root).length;
+}
+
+/**
+ * Why a send should be refused, or null. Applied to every path — MCP tools,
+ * REST, replies — because a loop does not care which door it came through.
+ */
+function runawayReason(from: string, to: string, threadAnchor: string | null): string | null {
+  const size = threadSize(threadAnchor);
+  if (size >= MAX_THREAD_MESSAGES) {
+    return (
+      `this thread already has ${size} messages (limit ${MAX_THREAD_MESSAGES}). ` +
+      'Two agents talking past each other is the usual cause. Stop and put the question to a human.'
+    );
+  }
+  const burst = burstDuration(from, to);
+  if (burst.ms > MAX_PAIR_DURATION_MS && burst.count > 2) {
+    return (
+      `${from} and ${to} have been going back and forth for ` +
+      `${Math.round(burst.ms / 60000)} minutes (limit ${Math.round(MAX_PAIR_DURATION_MS / 60000)}), ` +
+      `${burst.count} messages without a break. Pausing: report what is settled and ask a human what to do next.`
+    );
+  }
+
+  const since = Date.now() - PAIR_WINDOW_MS;
+  const pair = [...mail.values()].filter(
+    (m) =>
+      m.createdAt >= since &&
+      ((key(m.from) === key(from) && key(m.to) === key(to)) || (key(m.from) === key(to) && key(m.to) === key(from))),
+  ).length;
+  if (pair >= MAX_PAIR_IN_WINDOW) {
+    return (
+      `${from} and ${to} have exchanged ${pair} messages in the last ` +
+      `${Math.round(PAIR_WINDOW_MS / 60000)} minutes (limit ${MAX_PAIR_IN_WINDOW}). ` +
+      'Pausing the exchange; involve a human or wait.'
+    );
+  }
+  return null;
+}
+
+/**
  * A reply's subject.
  *
  * Prefixes used to accumulate — "re: re: re: …" — because every reply prefixed
@@ -947,6 +1122,12 @@ function buildMcpServer(identity: string | null) {
 
       if (thread && !mail.has(thread)) return fail('unknown_thread', { thread });
 
+      const runaway = runawayReason(from, resolved.name, thread ?? null);
+      if (runaway) {
+        void announcePause(from, resolved.name, runaway, thread ?? null);
+        return fail('runaway_guard', { detail: runaway });
+      }
+
       const m: Mail = {
         id: newId(),
         kind: kind ?? 'ask',
@@ -1065,6 +1246,11 @@ function buildMcpServer(identity: string | null) {
       const orig = mail.get(mail_id);
       if (!orig) return fail('unknown_mail', { mail_id });
       if (key(orig.to) !== key(from)) return fail('not_addressed_to_you', { mail_id, addressed_to: orig.to });
+      const runawayReply = runawayReason(from, orig.from, mail_id);
+      if (runawayReply) {
+        void announcePause(from, orig.from, runawayReply, mail_id);
+        return fail('runaway_guard', { detail: runawayReply });
+      }
 
       const reply: Mail = {
         id: newId(),
@@ -1378,6 +1564,12 @@ app.post('/mail', async (req, res) => {
   const threadId = typeof req.body?.thread === 'string' && req.body.thread.trim() ? req.body.thread.trim() : null;
   if (threadId && !mail.has(threadId)) return res.status(404).json({ error: 'unknown_thread', thread: threadId });
 
+  const runaway = runawayReason(String(from), resolved.name, threadId);
+  if (runaway) {
+    void announcePause(String(from), resolved.name, runaway, threadId);
+    return res.status(429).json({ error: 'runaway_guard', detail: runaway });
+  }
+
   // Verify the SENDER, which unlike the human claim is checkable: the CLI
   // reports the pane it runs in, and the server knows which identity owns that
   // pane. A receiver told mail came from "ui" can now rely on that much, even
@@ -1470,6 +1662,12 @@ app.post('/reply', async (req, res) => {
   if (typeof body !== 'string' || !body.trim()) return res.status(400).json({ error: 'body is required' });
   if (body.length > MAX_BODY) return res.status(413).json({ error: 'body too large; use pointers' });
 
+  const runawayReply = runawayReason(String(from ?? orig.to), orig.from, String(mail_id));
+  if (runawayReply) {
+    void announcePause(String(from ?? orig.to), orig.from, runawayReply, String(mail_id));
+    return res.status(429).json({ error: 'runaway_guard', detail: runawayReply });
+  }
+
   const reply: Mail = {
     id: newId(), kind: 'reply', from: String(from ?? orig.to), to: orig.from,
     subject: replySubject(orig.subject), body, pointers, expect: null, replyTo: orig.id, data,
@@ -1531,6 +1729,32 @@ app.get('/whoami', async (req, res) => {
         ? 'You hold the plain name for this repo, so mail addressed to it and to its topics comes to you.'
         : `Your own mailbox is "${me.name}". Mail addressed to "${me.base}" goes to the canonical pane, not here.`
       : 'No identity: this pane is not a live agent.',
+  });
+});
+
+/** Let a paused pair talk again: forget their recent exchange and the notice. */
+app.post('/resume', (req, res) => {
+  const a = String(req.query.a ?? req.body?.a ?? '');
+  const b = String(req.query.b ?? req.body?.b ?? '');
+  if (!a || !b) return res.status(400).json({ error: 'need both identities' });
+  announced.delete([key(a), key(b)].sort().join('|'));
+  // Age their recent messages out of the window rather than deleting them.
+  let moved = 0;
+  const shift = PAIR_WINDOW_MS + 1000;
+  for (const m of mail.values()) {
+    if ((key(m.from) === key(a) && key(m.to) === key(b)) || (key(m.from) === key(b) && key(m.to) === key(a))) {
+      m.createdAt -= shift;
+      moved++;
+    }
+  }
+  res.json({ ok: true, resumed: [a, b], messages_aged: moved });
+});
+
+app.get('/paused', async (_req, res) => {
+  res.json({
+    paused: [...announced.entries()].map(([pair, at]) => ({ pair, at })),
+    limits: { maxThread: MAX_THREAD_MESSAGES, maxPair: MAX_PAIR_IN_WINDOW, windowMs: PAIR_WINDOW_MS },
+    spawned: await readSpawned(),
   });
 });
 

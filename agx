@@ -479,6 +479,21 @@ print(json.load(sys.stdin).get('result',{}).get('pane',{}).get('pane_id') or '')
         exit 1 ;;
     esac
     herdr pane rename "$NEW_PANE" "$NAME" >/dev/null 2>&1 || true
+    # Recorded so the server can tell whoever started these sessions when they
+    # begin talking in circles, and so `agx kill` knows what it may close.
+    mkdir -p "$HOME_DIR/.run"
+    python3 - "$HOME_DIR/.run/spawned.json" "$NAME" "$NEW_PANE" "$KIND" "$NEW_CWD" "$FROM" <<'PYEOF'
+import json, sys, time, pathlib
+path, name, pane, kind, cwd, by = sys.argv[1:7]
+p = pathlib.Path(path)
+try:
+    rows = json.loads(p.read_text())
+except Exception:
+    rows = []
+rows = [r for r in rows if r.get('name') != name]
+rows.append({'name': name, 'pane': pane, 'kind': kind, 'cwd': cwd, 'by': by, 'at': int(time.time() * 1000)})
+p.write_text(json.dumps(rows, indent=2))
+PYEOF
     echo "started $KIND as \"$NAME\" in pane $NEW_PANE (cwd $NEW_CWD)"
     echo "it becomes addressable once herdr sees it — check with: agx agents"
     ;;
@@ -524,6 +539,45 @@ except Exception: pass" 2>/dev/null)
     done
     echo
     echo "watch replies with: agx inbox    ·    see them live in the chat view"
+    ;;
+  spawned)
+    python3 - "$HOME_DIR/.run/spawned.json" <<'PYEOF'
+import json, sys, pathlib, time
+try:
+    rows = json.loads(pathlib.Path(sys.argv[1]).read_text())
+except Exception:
+    rows = []
+if not rows:
+    print('no sessions started by agx')
+for r in rows:
+    age = int((time.time() * 1000 - r['at']) / 60000)
+    print(f"{r['name']:14} {r['kind']:8} {r['pane']:8} started {age}m ago by {r['by']}  {r['cwd']}")
+PYEOF
+    ;;
+  kill)
+    TARGET="${1:?usage: agx kill <name>|--all}"
+    python3 - "$HOME_DIR/.run/spawned.json" "$TARGET" <<'PYEOF' | while read -r line; do
+import json, sys, pathlib
+path, target = sys.argv[1:3]
+p = pathlib.Path(path)
+try:
+    rows = json.loads(p.read_text())
+except Exception:
+    rows = []
+keep, killing = [], []
+for r in rows:
+    (killing if target in ('--all', r['name']) else keep).append(r)
+p.write_text(json.dumps(keep, indent=2))
+for r in killing:
+    print(f"{r['pane']} {r['name']}")
+PYEOF
+      PANE_ID="${line%% *}"; PANE_NAME="${line#* }"
+      herdr pane close "$PANE_ID" >/dev/null 2>&1 && echo "killed $PANE_NAME ($PANE_ID)" || echo "could not close $PANE_NAME ($PANE_ID) — already gone?"
+    done
+    ;;
+  resume)
+    A="${1:?usage: agx resume <a> <b>}"; B="${2:?usage: agx resume <a> <b>}"
+    api "/resume?a=$A&b=$B" -X POST | jq_or_cat
     ;;
   whoami)
     api "/whoami?pane=$(my_pane)" | jq_or_cat
