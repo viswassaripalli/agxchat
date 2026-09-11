@@ -455,7 +455,7 @@ EOF
     esac
     ;;
   open)
-    NAME="${1:?usage: agx open <name> [--kind claude|codex|gemini|...] [--cwd PATH] [--space]}"; shift || true
+    NAME="${1:?usage: agx open <name> [--kind claude|codex|agy|cursor|gemini|...] [--cwd PATH] [--space]}"; shift || true
     KIND="claude"; NEW_CWD="$PWD"; SPACE=0
     while [ $# -gt 0 ]; do
       case "$1" in
@@ -473,6 +473,14 @@ EOF
       fi
     fi
     command -v herdr >/dev/null || { echo "agx: herdr is required to open a session" >&2; exit 1; }
+    # Antigravity's binary is agy, not gemini; gemini is a different CLI. A kind
+    # herdr does not know fails several layers down with a missing-command
+    # error, so check the name against herdr's own list first.
+    if ! herdr agent start --help 2>&1 | grep -q "\b$KIND\b"; then
+      echo "agx: herdr does not know the agent kind \"$KIND\"." >&2
+      echo "     Known kinds: $(herdr agent start --help 2>&1 | sed -n 's/.*possible values: //p' | head -1)" >&2
+      exit 1
+    fi
     # A pane must exist before an agent can be started in it.
     if [ "$SPACE" -eq 1 ]; then
       CREATED=$(herdr workspace create --cwd "$NEW_CWD" --label "$NAME" --no-focus)
@@ -500,6 +508,15 @@ print(json.load(sys.stdin).get('result',{}).get('pane',{}).get('pane_id') or '')
       *'"error"'*)
         echo "agx: herdr could not start a '$KIND' agent in $NEW_PANE:" >&2
         printf '%s\n' "$START_OUT" | head -3 >&2
+        # herdr reports a startup timeout whether the agent is slow or simply
+        # absent, and "timed out" sends you looking in the wrong place.
+        case "$KIND" in
+          cursor) BIN="cursor-agent" ;;
+          *) BIN="$KIND" ;;
+        esac
+        command -v "$BIN" >/dev/null 2>&1 || \
+          echo "     \"$BIN\" is not on your PATH — that is probably why. Antigravity's command is agy." >&2
+        herdr pane close "$NEW_PANE" >/dev/null 2>&1 || true
         exit 1 ;;
     esac
     herdr pane rename "$NEW_PANE" "$NAME" >/dev/null 2>&1 || true

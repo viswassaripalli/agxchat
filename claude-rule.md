@@ -29,7 +29,8 @@ is; `agx whoami` names your own mailbox.
   knows its own repo and tools, and may not run the same agent you do.
 - Starting other agents: when asked for another session, a separate agent, or
   several agents working in parallel, use
-  `agx open <name> --kind claude|codex|gemini|cursor|... --cwd <path>`, or
+  `agx open <name> --kind claude|codex|agy|cursor|gemini|... --cwd <path>`
+  (`agy` is Antigravity; omit --kind to start the same kind you are), or
   `agx spawn --task "..." --task "..."` to start one per task. These are real
   sessions in their own panes, each with its own mailbox, visible to everyone
   and addressable by name.

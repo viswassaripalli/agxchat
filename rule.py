@@ -68,8 +68,11 @@ TARGETS = [
     # cross-tool one it gained in 1.20.3. Writing the block to AGENTS.md keeps
     # it in the file other agents also read; GEMINI.md is listed so an install
     # that predates AGENTS.md support still lands somewhere it is read.
-    ("antigravity", Path.home() / ".gemini", Path.home() / ".gemini" / "AGENTS.md"),
-    ("antigravity-gemini", Path.home() / ".gemini", Path.home() / ".gemini" / "GEMINI.md"),
+    # Antigravity: the CLI is `agy`, and its rules live under ~/.gemini —
+    # AGENTS.md is the cross-tool file, GEMINI.md its own convention. Both are
+    # written because which one a given version reads has changed.
+    ("antigravity(agy)", Path.home() / ".gemini", Path.home() / ".gemini" / "AGENTS.md"),
+    ("antigravity(agy)", Path.home() / ".gemini", Path.home() / ".gemini" / "GEMINI.md"),
 ]
 
 

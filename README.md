@@ -54,6 +54,8 @@ Two steps reach outside the install directory and can be skipped:
 only reaches for it if told to. `agx rule install` writes a marked block into
 every agent instruction file it finds — Claude, Codex, Cursor, opencode,
 Antigravity (`~/.gemini/AGENTS.md` and `GEMINI.md`) — backing each up first.
+Antigravity's CLI is `agy`; `gemini` is a different tool with its own binary, so
+use `--kind agy` for it.
 For an agent not on that list, name its file:
 `AGX_RULE_TARGETS=~/.thatagent/AGENTS.md agx rule install`. `agx rule targets` lists them, `show` prints the text,
 `remove` takes it out. Instruction files are read at session start, so restart a
