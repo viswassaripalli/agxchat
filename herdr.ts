@@ -178,6 +178,42 @@ export type NudgeResult = {
   detail?: string;
 };
 
+/**
+ * Panes herdr has NOT classified as agents.
+ *
+ * herdr only recognises agent kinds it ships an integration for, so a terminal
+ * running anything else — a newer CLI, a private tool, a plain shell — is
+ * invisible to `agent list`. Those panes can still be written to and read from,
+ * which is all delivery needs, so they are surfaced as targets with an unknown
+ * kind rather than being unaddressable.
+ */
+export async function listPlainPanes(): Promise<HerdrAgent[]> {
+  const { stdout } = await exec(HERDR, ['pane', 'list'], { maxBuffer: 8 * 1024 * 1024 });
+  const panes: any[] = unwrap(stdout)?.panes ?? [];
+  return Promise.all(
+    panes.map(async (raw) => {
+      const cwd = typeof raw?.cwd === 'string' ? raw.cwd : null;
+      const { root, repo } = await resolveRepo(cwd);
+      return {
+        name: typeof raw?.label === 'string' && raw.label ? raw.label : null,
+        kind: null, // herdr does not know what is running here
+        status: STATUSES.has(raw?.agent_status) ? (raw.agent_status as AgentStatus) : 'unknown',
+        cwd,
+        foregroundCwd: typeof raw?.foreground_cwd === 'string' ? raw.foreground_cwd : null,
+        paneId: typeof raw?.pane_id === 'string' ? raw.pane_id : null,
+        tabId: typeof raw?.tab_id === 'string' ? raw.tab_id : null,
+        workspaceId: typeof raw?.workspace_id === 'string' ? raw.workspace_id : null,
+        terminalId: typeof raw?.terminal_id === 'string' ? raw.terminal_id : null,
+        sessionId: null,
+        focused: raw?.focused === true,
+        repo,
+        dir: cwd ? basename(cwd) : null,
+        branch: await readBranch(root ?? cwd),
+      } as HerdrAgent;
+    }),
+  );
+}
+
 export async function nudge(paneId: string, text: string): Promise<NudgeResult> {
   // Test affordance: exercise routing and the wait guards without writing into
   // a live agent's TTY.

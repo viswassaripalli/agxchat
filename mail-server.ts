@@ -17,7 +17,16 @@ import { readFile, appendFile, writeFile, mkdir, rename } from 'node:fs/promises
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
-import { listAgents, nudge, sendKeys, readPane, explainAgent, herdrVersion, type HerdrAgent } from './herdr.ts';
+import {
+  listAgents,
+  listPlainPanes,
+  nudge,
+  sendKeys,
+  readPane,
+  explainAgent,
+  herdrVersion,
+  type HerdrAgent,
+} from './herdr.ts';
 import { originPane } from './origin.ts';
 import { createEventBus, startAgentPoll, type MailEvent } from './mail-events.ts';
 
@@ -140,6 +149,8 @@ type Mail = {
    * the thing that owns the terminal.
    */
   confirmedAt: number | null;
+  /** herdr could not say what runs in the target pane; delivery is literal. */
+  targetKindUnknown?: boolean;
 };
 
 type Session = {
@@ -226,6 +237,34 @@ async function loadStore() {
 const waitGraph = new Map<string, { target: string; mailId: string }>();
 
 const key = (name: string) => name.trim().toLowerCase();
+
+/**
+ * Everything that can receive a message: agents herdr recognises, plus panes it
+ * does not. Unrecognised panes are included because delivery only needs a
+ * terminal to write into — refusing them would mean AGxChat supports exactly
+ * the agents herdr has shipped an integration for, and no others.
+ *
+ * AGX_AGENTS_ONLY=1 restricts targets to recognised agents again.
+ */
+async function listTargets(withBranch = false): Promise<HerdrAgent[]> {
+  const agents = await listAgents(withBranch);
+  if (process.env.AGX_AGENTS_ONLY === '1') return agents;
+  const known = new Set(agents.map((a) => a.paneId));
+  const here = process.cwd();
+  const plain = (await listPlainPanes().catch(() => [] as HerdrAgent[])).filter(
+    // Never offer our own chat view as a target: typing into it presses its keys.
+    (p) => p.paneId && !known.has(p.paneId) && p.cwd !== here,
+  );
+  return [...agents, ...plain];
+}
+
+/**
+ * A pane herdr cannot identify might be an agent it has no integration for, or
+ * might be a plain shell — in which case a message typed into it is executed as
+ * a command. So those panes are addressable only when named explicitly: they
+ * are never matched by repo or topic, and never chosen as "the readiest".
+ */
+const isUnidentified = (a: HerdrAgent) => !a.kind;
 
 const MAX_SUBJECT = 160;
 
@@ -460,7 +499,7 @@ function inboxOf(name: string): Mail[] {
  * workspace, but cwd does not.
  */
 async function resolvePane(session: Session | undefined, name: string, agents?: HerdrAgent[]) {
-  const list = agents ?? (await listAgents(false));
+  const list = agents ?? (await listTargets());
   const identities = await paneIdentities(list);
   const byIdentity = [...identities.values()].find((i) => key(i.name) === key(name));
   if (byIdentity) {
@@ -493,12 +532,26 @@ async function resolvePane(session: Session | undefined, name: string, agents?: 
  * separate mailboxes that happen to sit in the same repo.
  */
 async function paneIdentities(agents?: HerdrAgent[]) {
-  const list = agents ?? (await listAgents(false));
+  const list = agents ?? (await listTargets());
   const out = new Map<string, { name: string; base: string; canonical: boolean; paneId: string }>();
 
   const byCwd = new Map<string, HerdrAgent[]>();
   for (const a of list) {
     if (!a.paneId) continue;
+    if (!a.kind) {
+      // herdr cannot say what runs here — it may be an agent it has no
+      // integration for, or a plain shell, where a message would be executed
+      // as a command. Such a pane answers only to its own label or pane id,
+      // never to a name derived from its directory: "ask backend" must not be
+      // able to land in a shell that happens to sit in the backend repo.
+      out.set(a.paneId, {
+        name: a.name ?? a.paneId,
+        base: a.name ?? a.paneId,
+        canonical: true,
+        paneId: a.paneId,
+      });
+      continue;
+    }
     const k = a.cwd ?? a.paneId;
     byCwd.set(k, [...(byCwd.get(k) ?? []), a]);
   }
@@ -610,8 +663,9 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
   const paneHit = agents.find((a) => a.paneId === to);
   if (paneHit) return { ok: true, name: paneHit.paneId!, via: 'pane' };
 
-  const exact = agents.filter((a) => a.repo && key(a.repo) === t);
-  const pool = exact.length ? exact : agents.filter((a) => a.repo && key(a.repo).includes(t));
+  const identified = agents.filter((a) => !isUnidentified(a));
+  const exact = identified.filter((a) => a.repo && key(a.repo) === t);
+  const pool = exact.length ? exact : identified.filter((a) => a.repo && key(a.repo).includes(t));
   if (pool.length === 1) {
     const a = pool[0];
     const registered = [...registry.values()].find((s) => s.paneId === a.paneId);
@@ -744,6 +798,10 @@ async function nudgeNow(m: Mail, paneId: string, status: string) {
     } else {
       m.deliveryDetail = `pane ${paneId} (${status})${res.detail ? ` — ${res.detail}` : ''}`;
     }
+    if (m.targetKindUnknown) {
+      m.deliveryDetail +=
+        ' — herdr does not recognise what runs in that pane, so the text was typed in as-is';
+    }
   } catch (err) {
     m.delivery = 'undeliverable';
     m.deliveryDetail = `nudge failed: ${String(err)}`;
@@ -832,7 +890,7 @@ async function checkStalls() {
   });
   if (candidates.length === 0) return;
 
-  const agents = await listAgents(false).catch(() => []);
+  const agents = await listTargets().catch(() => []);
   for (const m of candidates) {
     const pane = agents.find((a) => a.paneId === m.targetPaneId);
     if (!pane) {
@@ -906,7 +964,7 @@ bus.subscribe((ev) => {
 const TRUSTED_BLOCKED = new Set(['claude']);
 
 async function deliver(m: Mail, opts: { silent?: boolean; loose?: boolean } = {}) {
-  const agents = await listAgents(false);
+  const agents = await listTargets();
   const session = registry.get(key(m.to));
   // A reply goes back to the terminal the question came from, not to whichever
   // pane happens to be canonical for that name.
@@ -914,6 +972,7 @@ async function deliver(m: Mail, opts: { silent?: boolean; loose?: boolean } = {}
   const pane = preferred ?? (await resolvePane(session, m.to, agents));
 
   m.targetPaneId = pane?.paneId ?? null;
+  m.targetKindUnknown = pane ? isUnidentified(pane) : false;
 
   if (!m.notify) {
     m.delivery = 'queued';
@@ -968,7 +1027,7 @@ async function deliver(m: Mail, opts: { silent?: boolean; loose?: boolean } = {}
 }
 
 async function mergedAgents() {
-  const agents = await listAgents();
+  const agents = await listTargets(true);
   const identities = await paneIdentities(agents);
   return agents.map((a) => {
     const seeded = [...registry.values()].find((x) => x.paneId === a.paneId || (x.cwd && x.cwd === a.cwd));
@@ -1008,7 +1067,7 @@ async function loadSeed(path = process.env.AGX_SEED ?? process.env.HERDR_MAIL_SE
     return { loaded: 0, path, bound: [] as string[] };
   }
   const parsed = JSON.parse(raw);
-  const agents = await listAgents(false);
+  const agents = await listTargets();
   const bound: string[] = [];
   for (const entry of parsed?.agents ?? []) {
     if (typeof entry?.name !== 'string') continue;
@@ -1150,7 +1209,7 @@ function buildMcpServer(identity: string | null) {
         });
       }
 
-      const agents = await listAgents(false);
+      const agents = await listTargets();
       const resolved = await resolveTarget(to, agents);
       if (!resolved.ok) return fail(resolved.reason, resolved);
 
@@ -1591,7 +1650,7 @@ app.post('/mail', async (req, res) => {
   if (typeof to !== 'string' || !to) return res.status(400).json({ error: 'to is required' });
   if (typeof body === 'string' && body.length > MAX_BODY) return res.status(413).json({ error: 'body too large; use pointers' });
 
-  const agents = await listAgents(false);
+  const agents = await listTargets();
   const resolved = await resolveTarget(to, agents);
   if (!resolved.ok) return res.status(409).json(resolved);
 
@@ -1727,7 +1786,7 @@ app.post('/reply', async (req, res) => {
 /** Who the server thinks the caller is, and which panes share that identity. */
 /** What the server observes about the caller, independent of what it claims. */
 app.get('/origin', async (req, res) => {
-  const agents = await listAgents(false);
+  const agents = await listTargets();
   const observed = await originPane(
     req.socket.remotePort,
     agents.map((a) => a.paneId).filter((x): x is string => Boolean(x)),
@@ -1741,7 +1800,7 @@ app.get('/origin', async (req, res) => {
 });
 
 app.get('/whoami', async (req, res) => {
-  const agents = await listAgents(false);
+  const agents = await listTargets();
   const identities = await paneIdentities(agents);
   const paneId = typeof req.query.pane === 'string' ? req.query.pane : null;
   const me = paneId ? identities.get(paneId) : null;

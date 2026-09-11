@@ -14,6 +14,7 @@ Usage:
   rule.py install-all|remove-all [<rule-source>]   every detected agent
   rule.py targets                                  what would be written
 """
+import os
 import re
 import shutil
 import sys
@@ -63,12 +64,38 @@ TARGETS = [
     ("codex", Path.home() / ".codex", Path.home() / ".codex" / "AGENTS.md"),
     ("cursor", Path.home() / ".cursor", Path.home() / ".cursor" / "AGENTS.md"),
     ("opencode", Path.home() / ".config" / "opencode", Path.home() / ".config" / "opencode" / "AGENTS.md"),
+    # Antigravity reads both: GEMINI.md is its own convention, AGENTS.md the
+    # cross-tool one it gained in 1.20.3. Writing the block to AGENTS.md keeps
+    # it in the file other agents also read; GEMINI.md is listed so an install
+    # that predates AGENTS.md support still lands somewhere it is read.
+    ("antigravity", Path.home() / ".gemini", Path.home() / ".gemini" / "AGENTS.md"),
+    ("antigravity-gemini", Path.home() / ".gemini", Path.home() / ".gemini" / "GEMINI.md"),
 ]
 
 
+def extra_targets() -> list:
+    """Instruction files this list does not know about.
+
+    Every agent reads a different file and new ones appear faster than a
+    hard-coded list can track, so AGX_RULE_TARGETS takes a colon-separated list
+    of paths: AGX_RULE_TARGETS=~/.antigravity/AGENTS.md:~/.foo/RULES.md
+    """
+    raw = os.environ.get("AGX_RULE_TARGETS", "")
+    out = []
+    for entry in raw.split(":"):
+        entry = entry.strip()
+        if entry:
+            out.append((Path(entry).name, Path(entry).expanduser()))
+    return out
+
+
 def detected() -> list:
-    """Agents whose config directory exists on this machine."""
-    return [(name, target) for name, home, target in TARGETS if home.is_dir()]
+    """Agents whose config directory exists, plus anything named explicitly."""
+    found = [(name, target) for name, home, target in TARGETS if home.is_dir()]
+    for name, target in extra_targets():
+        if not any(t == target for _, t in found):
+            found.append((name, target))
+    return found
 
 
 def main() -> int:
@@ -85,6 +112,8 @@ def main() -> int:
         for name, target in found:
             state = "installed" if target.exists() and BEGIN in target.read_text() else "not installed"
             print(f"{name:10} {target}  ({state})")
+        print()
+        print("Another agent? AGX_RULE_TARGETS=~/.thatagent/AGENTS.md agx rule install")
         return 0
 
     if action in ("install-all", "remove-all"):
