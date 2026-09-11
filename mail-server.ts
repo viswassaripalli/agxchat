@@ -20,6 +20,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import {
   listAgents,
   listPlainPanes,
+  inferKind,
   nudge,
   sendKeys,
   readPane,
@@ -1813,8 +1814,11 @@ app.get('/whoami', async (req, res) => {
   res.json({
     identity: me?.name ?? null,
     // What herdr thinks is running here, so a session spawning another can
-    // start its own kind rather than assuming somebody else's.
-    kind: mine?.kind ?? null,
+    // start its own kind rather than assuming somebody else's. herdr only
+    // labels kinds it has an integration for, so when it says nothing the
+    // process table is asked instead — otherwise an Antigravity session
+    // spawning a worker would get whatever the fallback happens to be.
+    kind: mine?.kind ?? (paneId ? await inferKind(paneId) : null),
     your_pane: paneId,
     canonical: me?.canonical ?? null,
     base_name: me?.base ?? null,
