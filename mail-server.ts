@@ -13,7 +13,7 @@
  */
 import express from 'express';
 import { randomBytes } from 'node:crypto';
-import { readFile, appendFile, writeFile, mkdir } from 'node:fs/promises';
+import { readFile, appendFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
@@ -1213,6 +1213,50 @@ async function deletedMail(): Promise<Mail[]> {
   return [...tombed].map((id) => last.get(id)).filter((m): m is Mail => Boolean(m) && !mail.has(m!.id));
 }
 
+/**
+ * Erase records from the log rather than hiding them.
+ *
+ * A normal delete appends a tombstone: the message leaves the mailbox and stays
+ * recoverable, which is what makes `agx restore` possible — but it also means
+ * the body is still sitting in the file, readable by anything that can read the
+ * file. When someone deletes a conversation they may mean the second thing, so
+ * this rewrites the log without those ids at all.
+ *
+ * Written to a temporary file and renamed, so an interrupted purge leaves the
+ * old log intact rather than a half-written one.
+ */
+async function purgeFromLog(ids: string[]): Promise<number> {
+  if (storeBroken || ids.length === 0) return 0;
+  const gone = new Set(ids);
+  let kept = 0;
+  let dropped = 0;
+  try {
+    const raw = await readFile(STORE, 'utf8').catch(() => '');
+    const out: string[] = [];
+    for (const line of raw.split('\n').filter(Boolean)) {
+      try {
+        const rec = JSON.parse(line);
+        if (rec?.id && gone.has(rec.id)) {
+          dropped++;
+          continue;
+        }
+      } catch {
+        /* keep unparseable lines: they are not ours to judge */
+      }
+      out.push(line);
+      kept++;
+    }
+    const tmp = `${STORE}.purge-${Date.now()}`;
+    await writeFile(tmp, out.length ? out.join('\n') + '\n' : '', { mode: 0o600 });
+    await rename(tmp, STORE);
+    storeLines = kept;
+  } catch (err) {
+    console.error(`purge failed: ${String(err)}`);
+    return 0;
+  }
+  return dropped;
+}
+
 async function removeMail(ids: string[]) {
   const removed: string[] = [];
   for (const id of ids) {
@@ -1534,14 +1578,16 @@ app.post('/mail/:id/restore', async (req, res) => {
 app.delete('/mail/:id', async (req, res) => {
   const removed = await removeMail([req.params.id]);
   if (!removed.length) return res.status(404).json({ error: 'unknown_mail', id: req.params.id });
-  res.json({ ok: true, removed });
+  const purged = req.query.purge === '1' ? await purgeFromLog(removed) : 0;
+  res.json({ ok: true, removed, purged, recoverable: purged === 0 });
 });
 
 /** Delete a whole thread — the root and every reply under it. */
 app.delete('/thread/:id', async (req, res) => {
   if (!mail.has(req.params.id)) return res.status(404).json({ error: 'unknown_mail', id: req.params.id });
   const removed = await removeMail(threadIds(req.params.id));
-  res.json({ ok: true, removed });
+  const purged = req.query.purge === '1' ? await purgeFromLog(removed) : 0;
+  res.json({ ok: true, removed, purged, recoverable: purged === 0 });
 });
 
 /**
@@ -1553,7 +1599,8 @@ app.delete('/mail', async (req, res) => {
     return res.status(400).json({ error: 'confirm_required', hint: 'DELETE /mail?confirm=yes' });
   }
   const removed = await removeMail([...mail.keys()]);
-  res.json({ ok: true, removed: removed.length });
+  const purged = req.query.purge === '1' ? await purgeFromLog(removed) : 0;
+  res.json({ ok: true, removed: removed.length, purged, recoverable: purged === 0 });
 });
 
 /** Powers the TUI's `e` key — the only thing in this design that can clear a blocked agent. */

@@ -16,6 +16,9 @@ jq_or_cat() { python3 -m json.tool 2>/dev/null || cat; }
 # Every response goes through here so an error body is reported as the server
 # worded it. Without this a 401 reached a parser expecting mail and came out as
 # a traceback, which tells the user nothing about the token.
+# api <path> [extra curl args...] — path FIRST. Passing curl flags first makes
+# the path the URL and every request fails as "server not answering", which is
+# exactly how the delete commands broke.
 api() {
   local path="$1"; shift
   local body code
@@ -548,19 +551,27 @@ for d in ds: print(f\"{d['id']} {d['from']:9}-> {d['to']:9} {d['subject'][:56]}\
     curl -s "${AUTH[@]}" -X POST "$BASE/mail/$ID/restore" | jq_or_cat
     ;;
   delete)
-    ID="${1:?usage: agx delete <mail-id>}"
-    curl -s "${AUTH[@]}" -X DELETE "$BASE/mail/$ID" | jq_or_cat
+    # --purge erases the records from the log instead of appending a tombstone;
+    # without it the body stays readable in .run/mail.jsonl and restorable.
+    ID="${1:?usage: agx delete <mail-id> [--purge]}"
+    Q=""
+    case "${2:-}" in --purge) Q="?purge=1" ;; esac
+    api "/mail/$ID$Q" -X DELETE | jq_or_cat
     ;;
   delete-thread)
-    ID="${1:?usage: agx delete-thread <mail-id>}"
-    curl -s "${AUTH[@]}" -X DELETE "$BASE/thread/$ID" | jq_or_cat
+    ID="${1:?usage: agx delete-thread <mail-id> [--purge]}"
+    Q=""
+    case "${2:-}" in --purge) Q="?purge=1" ;; esac
+    api "/thread/$ID$Q" -X DELETE | jq_or_cat
     ;;
   clear)
     if [ "${1:-}" != "--yes" ]; then
       echo "this deletes every message and cannot be undone. re-run: agx clear --yes" >&2
       exit 1
     fi
-    curl -s "${AUTH[@]}" -X DELETE "$BASE/mail?confirm=yes" | jq_or_cat
+    Q="confirm=yes"
+    for a in "$@"; do case "$a" in --purge) Q="confirm=yes&purge=1" ;; esac; done
+    api "/mail?$Q" -X DELETE | jq_or_cat
     ;;
   thread)
     ID="${1:?usage: mail thread <mail-id>}"
