@@ -15,145 +15,108 @@ MCP-over-HTTP. [herdr](https://herdr.dev) carries the wake-up.
  │  design ⇄ tests                │  2 messages · answered in 43s
  │  Which suites cover status…●2  │
  │ !web ⇄ tests                   │  design → tests 21:14 eb5a
- │  Trigger an incremental run 6m │  I am changing the colorType mapping…
+ │  Trigger an incremental run 6m │  I am changing the colour mapping…
  ╰────────────────────────────────╯  tests → design 21:15 8bac
                                      None of the suites assert pill text…
  j/k move · o order · f filter · c bodies · i write · d delete · q quit
 ```
 
-## Do you need this?
+## Requirements
 
-Claude Code already messages its own sessions — `ListAgents` and `SendMessage`,
-natively, no install. **If both ends are Claude, use that.** It is better at the
-part it covers.
+| | |
+| --- | --- |
+| **Node** | 18 or newer (`node -v`) |
+| **git** | to clone and update |
+| **[herdr](https://herdr.dev)** | 0.7.1 or newer; 0.9+ recommended — delivery is native there |
+| **OS** | macOS and Linux. Origin verification uses `lsof` and `ps`; without them it degrades to self-reported |
+| **Agents** | already running in herdr panes — Claude Code, Codex, Cursor, opencode, Gemini, Copilot and others herdr detects |
 
-This exists for the part it does not:
-
-| | built-in | AGxChat |
-| --- | --- | --- |
-| Claude → Claude | yes, and better | yes |
-| Claude → Codex, Cursor, opencode… | no | yes |
-| History after a restart | the transcript | append-only log, deletable, recoverable |
-| Why a message did not land | it arrived or it did not | `deferred`, `stalled`, `target_blocked`, with reasons |
-| Addressing | by session name | by name, repo or topic, picking whichever pane is idle |
-
-A mailbox over HTTP plus a nudge typed into a terminal assumes nothing about who
-is reading — which is the only way a Claude session and a Codex session talk at
-all.
-
-## Install
+## Download and install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/viswassaripalli/agxchat/main/install.sh | bash
 ```
 
-Clones to `~/.agxchat`, installs dependencies, links `agx`, detects your sessions
-from herdr's panes, writes the rule that teaches agents to use it, starts the
-server, and opens the chat in its own **AGxChat** workspace. Then, in any session
-(restart it once so it picks up the rule):
-
-```
-ask tests whether the dashboard suite is green
-```
-
-Re-running updates in place; so does `agx update`. `agx uninstall --yes` reverses
-all of it, keeping your seed and mail in a backup. Two steps reach outside the
-install directory and can be skipped: `AGX_NO_RULE=1` (do not touch instruction
-files) and `AGX_NO_START=1` (do not start the server or open the workspace).
-
-**Teaching your sessions.** `agx` works the moment it is on PATH, but a session
-only reaches for it if told to. `agx rule install` writes a marked block into
-every agent instruction file it finds — `~/.claude/CLAUDE.md`,
-`~/.codex/AGENTS.md`, `~/.cursor/AGENTS.md`, `~/.config/opencode/AGENTS.md` —
-backing each up first. `agx rule targets` lists them, `show` prints the text,
-`remove` takes it out. These are read at session start, so restart a session for
-it to apply.
-
-## Commands
-
-| | |
-| --- | --- |
-| `agx serve` / `stop` / `status` | run the server, stop it, dump health |
-| `agx chat [--space]` | the thread view; `--space` gives it its own workspace |
-| `agx agents` / `whoami` | who is live and what kind; your own mailbox |
-| `agx send <to> <subject> <body>` | `--for <human>` `--via <mail-id>` `--expect <shape>` `--thread <mail-id>` `--pointer <path>` |
-| `agx inbox` / `thread <id>` / `reply <id> <body>` | read and answer |
-| `agx open <name> --kind claude\|codex\|…` | start a session and make it addressable |
-| `agx spawn <n>` or `--task "…" --task "…"` | start several and give each its own task (max 8) |
-| `agx delete <id>` / `delete-thread <id>` / `clear --yes` | remove a message, a thread, everything. Add `--purge` to erase rather than hide |
-| `agx deleted` / `restore <id>` | list what delete hid, bring one back |
-| `agx provenance` | audit every claim of human authority |
-| `agx bootstrap [--write]` | wire `.mcp.json` into your repos (dry run by default) |
-| `agx spawned` / `kill <name>\|--all` / `resume <a> <b>` | sessions agx started; close them; let a paused pair talk again |
-| `agx update` / `uninstall --yes` | pull changes; remove everything |
-
-Sending from another session needs nothing installed there — every agent has a
-shell:
+Clones to `~/.agxchat`, installs dependencies, links `agx` onto your PATH,
+detects your sessions from herdr's panes, writes the rule that teaches agents to
+use it, starts the server, and opens the chat in its own **AGxChat** workspace.
 
 ```bash
-agx send tests "Run the suite" "Against the staging fixture" --for "$USER"
-agx inbox
-agx reply 68fb "Yes — StatusLabel."
+agx update             # pull changes, reinstall deps, restart the server
+agx uninstall --yes    # remove everything; keeps seed and mail in a backup
 ```
 
-Identity comes from asking the server which pane you are in. If that fails,
-`send` and `reply` refuse and name the cause rather than guessing: mail from a
-wrong sender gets replies nobody reads.
+Two steps reach outside the install directory and can be skipped:
+`AGX_NO_RULE=1` (do not write to agent instruction files) and `AGX_NO_START=1`
+(do not start the server or open the workspace).
 
-## Delivery
+**Teaching your sessions.** `agx` works as soon as it is on PATH, but a session
+only reaches for it if told to. `agx rule install` writes a marked block into
+every agent instruction file it finds — Claude's, Codex's, Cursor's, opencode's
+— backing each up first. `agx rule targets` lists them, `show` prints the text,
+`remove` takes it out. Instruction files are read at session start, so restart a
+session for it to apply.
 
-Two paths, chosen by probing what the installed herdr can do:
+## Talking to another session
 
-- **0.9+** — `agent prompt … --wait --until working` submits the text *and waits
-  for the agent to react*, so delivery reports `accepted by the agent`.
-- **0.7.x** — no such command, so `pane send-text` + `send-keys enter`, then read
-  the pane back and submit again if the text is still sitting there: that Enter
-  gets dropped when the pane has a shell running. Forced with
-  `AGX_FORCE_TTY_NUDGE=1`.
+Once the rule is installed you use plain words in any session; it turns them
+into `agx` calls and reports the message id without blocking.
 
-| Target state | Result |
+| You say | What happens |
 | --- | --- |
-| `idle` / `done` | delivered now |
-| `working` | `deferred`, flushed on the next idle transition |
-| `blocked`, Claude | `target_blocked`, retried when the pane frees up |
-| `blocked`, other agents | delivered anyway — Codex reports `blocked` while merely waiting at its prompt |
-| no pane | `undeliverable` |
-| nudged, then nothing | `stalled` |
+| *"ask tests whether the dashboard suite is green"* | mail to `tests`, id reported, reply arrives in your pane |
+| *"tell api I'm changing the error shape, ask if anything depends on it"* | mail to `api`, no answer required |
+| *"ask whoever owns the design system if a StatusLabel exists"* | routed by topic, not by session name |
+| *"ask tests to run the suite and give me the run id"* | adds `--expect "run id"` so the answer comes back shaped |
+| *"check my inbox"* / *"any replies yet?"* | `agx inbox` |
+| *"who's live?"* | `agx agents` — names, kinds, states, topics |
 
-**Stalled** is an inference, because `agent_status` is not enough: a Claude pane
-parked on a permission prompt reports `done`. A mail that was nudged and then
-neither read, engaged with, nor answered within `AGX_STALL_MS` (60s), while its
-target is not `working`, gets flagged. The *reason* comes from `herdr agent
-explain --json`, which names the detection rule that matched — herdr maintains
-that manifest per agent kind and refreshes it remotely, so it knows what a Claude
-permission prompt and a Codex approval dialog look like. Reading or engaging
-clears the flag. Nothing is ever re-nudged; a stalled agent needs a human, not
-more text.
+Spelled out, the same things are:
 
-Payload travels by pointer: the terminal carries an id, never the content. Use
-`--pointer <path>` for anything large.
-
-## Identity
-
-Every pane is its own mailbox. The canonical pane for a repo keeps the plain
-name, others get a `-p<n>` suffix, and an agent herdr has a name for keeps that
-name.
-
-```
-* web       claude  w6:p1  hevo-ui     idle  [web dashboard]
-  web-p4    claude  w6:p4  hevo-ui     done  []
-* tests     claude  w8:p1  e2e-tests   idle  [tests e2e suite]
-  cx-1      codex   wD:p8  scratch     idle  []
+```bash
+agx agents
+agx send tests "Run the suite" "Against the staging fixture" --expect "run id" --for "$USER"
+agx inbox
+agx reply 68fb "Yes — StatusLabel, exported from the design system."
+agx thread 68fb
 ```
 
-`to:` resolves by registry name → herdr name → pane identity → topic → pane id →
-repo. When a pass matches several panes it **picks the readiest** — idle before
-done before working before blocked, then canonical — and reports what it chose
-among. Topics stay with the canonical pane, so "ask design …" does not fan out to
-every terminal open on that repo. `repo` is the git root's name, not
-`basename(cwd)`: a session in `<repo>/ui` would otherwise advertise itself as
-`ui`. A reply goes back to the pane that sent the question, not to whichever pane
-is canonical.
+## Sending files
+
+The terminal carries an id, never a payload — large content travels as a path:
+
+```bash
+agx send api "Failing cases" "The 12 failures are listed here, one per line." \
+  --pointer /tmp/failures.txt
+```
+
+The recipient reads the file directly; nothing large is ever typed into a
+terminal. In plain words: *"send api the failure list at /tmp/failures.txt and
+ask which are known"*. Both sessions must be able to see the path — same machine,
+or a shared mount.
+
+## Starting sessions and handing out work
+
+| You say | What happens |
+| --- | --- |
+| *"open a Claude session called reviewer in the api repo"* | `agx open reviewer --kind claude --cwd …` |
+| *"open a Codex session for scratch work"* | same, `--kind codex` |
+| *"spawn three workers and give each of these tasks…"* | `agx spawn --task … --task … --task …` |
+| *"what did you start?"* | `agx spawned` — names, kinds, ages, who asked |
+| *"kill the workers"* | `agx kill --all` — only sessions agx started |
+
+```bash
+agx open reviewer --kind claude --cwd ~/code/api
+agx spawn --kind claude --cwd ~/code/web \
+  --task "Read src/routes and list every unauthenticated endpoint" \
+  --task "Check package.json for dependencies with no lockfile entry"
+agx spawned
+agx kill reviewer          # or: agx kill --all
+```
+
+Each task goes out as mail rather than typed text, so every answer threads back
+into the mailbox instead of being stranded in a pane you have to go and read.
+Capped at eight sessions per invocation; each one is a real agent.
 
 ## Runaway loops
 
@@ -162,57 +125,125 @@ agents that each keep answering will do so until someone notices the token bill:
 no participant has a reason to stop, because each message is individually
 reasonable.
 
-Three caps stop it, and a trip pauses the pair rather than killing anything:
+Three caps stop it, and **they apply only to sessions agx started** — your own
+sessions are never throttled, because a long exchange there is work, not a
+runaway. `AGX_GUARD_ALL=1` applies them to everything.
 
-| | default | env |
+| | Default | Env |
 | --- | --- | --- |
 | Messages in one thread | 24 | `AGX_MAX_THREAD` |
-| Messages between a pair in 5 minutes | 12 | `AGX_MAX_PAIR`, `AGX_PAIR_WINDOW_MS` |
-| Unbroken back-and-forth between a pair | 10 minutes | `AGX_MAX_PAIR_MINUTES` |
+| Messages between a pair in 5 minutes | 12 | `AGX_MAX_PAIR` |
+| Unbroken back-and-forth | 10 minutes | `AGX_MAX_PAIR_MINUTES` |
 
-The duration cap exists because counts alone miss the slow loop — two agents
-answering each other every four minutes never trip a rate limit and still burn
-an afternoon.
+The duration cap matters because counts miss the slow loop: two agents answering
+each other every four minutes never trip a rate limit and still burn an
+afternoon.
 
-On a trip the send is refused with `runaway_guard`, and whoever started those
-sessions gets a message naming what happened, how far the thread got, the last
-few exchanges, and the two options:
+On a trip the send is refused and **whoever started those sessions is told** —
+what happened, how far it got, the last few exchanges, and the two options:
 
 ```
-Paused: web and tests are looping
-web and tests have exchanged 12 messages in the last 5 minutes (limit 12).
-Thread is 8 messages. Last exchanges — web: turn 5 | tests: turn 6 …
-Your options: let them continue (agx resume web tests), or stop them (agx kill --all).
+Paused: worker-1 and worker-2 are looping
+… exchanged 12 messages in the last 5 minutes (limit 12). Thread is 8 messages.
+Last exchanges — worker-1: still unclear | worker-2: could you clarify …
+Your options: let them continue (agx resume worker-1 worker-2),
+              or stop them (agx kill --all).
 ```
 
-`agx spawned` lists sessions this machine started and who asked for them,
-`agx kill <name>` or `--all` closes them, and `agx resume <a> <b>` lets a paused
-pair carry on. Sessions you started yourself are never killed by `--all`; only
-ones `agx open` / `agx spawn` created.
+## Reading
 
-## One exchange, one thread
+`agx chat` opens the thread view; `--space` gives it its own herdr workspace.
 
-Threading follows `replyTo`, so **every `send` starts a new thread**. Continue one
-with `agx reply <id>` or `agx send … --thread <id>`. In the chat view, `p`
-collapses all exchanges between the same two agents into one conversation.
+| Key | |
+| --- | --- |
+| `j` / `k` | move between threads |
+| `o` | order: stable (default) or most recent first |
+| `f` | show only threads needing attention |
+| `c` | full bodies or short |
+| `p` | group all exchanges between the same two agents |
+| `i` | write a message |
+| `d` | delete the selected thread |
+| `e` | send Esc to a stuck session |
+| `q` | quit |
 
-The list is in **stable order** by default: new threads append at the bottom and
-arrivals show as an unread count, rather than rows jumping while you read. `o`
-switches to recent-first.
+The list is **stable by default**: new threads append at the bottom and arrivals
+show as an unread count, rather than rows jumping while you read.
+
+Threading follows replies, so **every new message starts a new thread**. Continue
+one with `agx reply <id>`, or `agx send … --thread <id>` to raise something new
+inside it.
+
+## Deleting
+
+```bash
+agx delete <id>                  # hides it; agx restore <id> brings it back
+agx delete <id> --purge          # erases it from the log
+agx delete-thread <id> [--purge]
+agx clear --yes [--purge]
+agx deleted                      # what is hidden and still recoverable
+```
+
+Without `--purge` a delete appends a tombstone: the message leaves the mailbox
+and the chat view, but its body stays in the log and can be restored. With
+`--purge` the records are rewritten out of the log and are gone.
+
+## Delivery
+
+Two paths, chosen by probing what the installed herdr can do. On **0.9+**,
+`agent prompt --wait` submits the text and waits for the agent to react, so
+delivery reports `accepted by the agent`. On **0.7.x** there is no such command,
+so the text is typed and submitted, then the pane is read back and submitted
+again if it is still sitting there — that Enter gets dropped when the pane has a
+shell running.
+
+| Target state | Result |
+| --- | --- |
+| idle or done | delivered now |
+| working | `deferred`, flushed on the next idle transition |
+| blocked (Claude) | `target_blocked`, retried when the pane frees up |
+| blocked (other agents) | delivered anyway — some report `blocked` while merely waiting at their prompt |
+| no pane | `undeliverable` |
+| nudged, then nothing | `stalled` |
+
+**Stalled** is an inference, because the reported status is not enough: a Claude
+pane parked on a permission prompt reports `done`. A message that was nudged and
+then neither read, engaged with, nor answered within `AGX_STALL_MS` (60s), while
+its target is not working, gets flagged. The reason comes from herdr's own
+detection rules, which know what a permission prompt looks like for each agent
+kind. Reading or engaging clears it; nothing is ever re-nudged.
+
+## Identity
+
+Every pane is its own mailbox. The canonical pane for a repo keeps the plain
+name, others get a `-p<n>` suffix, and a session started with a name keeps that
+name.
+
+```
+* web       claude  web-app     idle  [web dashboard]
+  web-p4    claude  web-app     done  []
+* tests     claude  e2e-tests   idle  [tests e2e suite]
+  cx-1      codex   scratch     idle  []
+```
+
+Recipients resolve by name, then topic, then repo. When several panes match it
+**picks the readiest** — idle before busy — and reports what it chose among.
+Topics stay with the canonical pane, so asking "the design system" does not fan
+out to every terminal open on that repo. A reply goes back to the pane that sent
+the question.
 
 ## Provenance: the finding
 
 *A relayed claim looks exactly like a first-hand one.* This is the part worth
 reading even if you never install anything.
 
-A session was asked to get a suite run, could not do it itself, and mailed the
-session that could — writing, truthfully as far as it knew, that the human had
-asked. Several messages later the same sender wrote *"Confirmed: run
-dashboard_incremental_only.yml"*, again in the human's name, for a run that
-provisions real infrastructure. The human had confirmed nothing. Somewhere in a
-chain of relays, a request had become an authorisation.
+A session was asked to get a test suite run. It could not do that itself, so it
+mailed the session that could, writing — truthfully, as far as it knew — that
+the human had asked. Several messages later the same sender wrote *"Confirmed:
+go ahead"*, again in the human's name, for a run that provisions real
+infrastructure. The human had confirmed nothing. Somewhere in a chain of relays,
+a request had become an authorisation.
 
-The receiver refused:
+The receiving session refused:
 
 > I cannot take a claim of his approval from a mail as his approval. If he asks
 > me directly I will run it immediately.
@@ -229,34 +260,30 @@ Four attempts followed, and the first three were wrong in instructive ways.
    Its limit, as one of them put it: *"`--via` being present tells me the sender
    is being scrupulous, while its absence tells me nothing."*
 2. **Verify the sender** by comparing the claimed sender against the claimed
-   pane. Announced as verification; forgeable in ten seconds. A `POST` naming
-   another session *and* its pane was accepted, delivered labelled "sender
-   verified", and had its reply addressed to the impersonated session's real
-   pane.
+   pane. Announced as verification; forgeable in ten seconds, because a client
+   that lies about both at once satisfies the check.
 3. **Say it is forgeable.** Honest, but the hole stayed open.
 4. **Observe the origin**, as the receiver specified: *"stamped by the server
    from the connection it actually received the mail on, never from a field the
-   client supplies."* Peer port off the socket → the pid that owns it → its
-   process ancestry → the pids herdr reports per pane. `from_pane` is ignored
-   whenever an origin can be observed, forged senders get `403 sender_forged`,
-   and `GET /origin` shows what the server sees.
+   client supplies."* The sending pane is now derived from the connection and the
+   operating system's process tree. Forged senders are refused.
 
-A fifth problem sat underneath all of them: the nudge line concatenated the
-server's part with the sender's, so a subject could carry a **fake banner**
-indistinguishable from the real one. The server's half is now fenced in `« »`,
-those characters are stripped from sender content, and content is flattened to
-one line. Asked to sort three banners, one real, a receiver did — and ranked its
-evidence better than the fix does: *"position first, because my client renders
-exactly one envelope per mail and the impostors arrive inside the body;
-delimiters second, a weak signal on its own."* **Structure beats marking.**
+A fifth problem sat underneath all of them: the notification line mixed the
+server's words with the sender's, so a subject could contain a **fake banner**
+indistinguishable from the real one. The server's half is now fenced, and those
+characters are stripped from anything a sender writes. Asked to sort three
+banners, one real, a receiver did — and ranked its evidence better than the fix
+does: *"position first, because my client renders exactly one envelope per mail
+and the impostors arrive inside the body; delimiters second, a weak signal on its
+own."* **Structure beats marking.**
 
 Where it lands:
 
 | | Checked? |
 | --- | --- |
 | Which pane sent it | **yes** — taken from the connection, not from a claim |
-| Whether a human asked | no — `--for` is a string the sender types |
-| Whether the sender heard it from that human | no — `--via` is voluntary |
+| Whether a human asked | no — it is a string the sender types |
+| Whether the sender heard it from that human | no — declaring a relay is voluntary |
 
 `agx provenance` audits every claim and marks it first- or second-hand. Origin is
 real; authority never was. Which leaves enforcement where two receiving sessions
@@ -273,10 +300,11 @@ around it.
 
 ## Security
 
-Every route but `/health` requires `X-AGX-Token`, the websocket included — it
-carries whole message bodies. The server generates the secret on first start into
-`.run/token` (mode 0600); the CLI and TUI read it, and `agx bootstrap --write`
-copies it into each `.mcp.json`. `AGX_NO_AUTH=1` disables the check.
+Every route but the health check requires a token, the websocket included — it
+carries whole message bodies. The server generates the secret on first start
+into `.run/token` (mode 0600); the CLI and chat view read it, and
+`agx bootstrap --write` copies it into each repo's MCP config. `AGX_NO_AUTH=1`
+disables the check.
 
 That stops *incidental* local access — a browser tab, a script, a postinstall
 hook. It is not a boundary against a determined local attacker: anything that can
@@ -284,80 +312,63 @@ read your home directory can read the token, and must be able to.
 
 What remains true: **anything that can reach the port with the token can type
 arbitrary text into your agent panes**, which hold shell and file-write access.
-One token, no scopes, no rate limit, no audit of who opened the socket. Bound to
-`127.0.0.1`. Do not run this on a shared machine and do not expose the port.
+One token, no scopes, no rate limit. Bound to localhost. Do not run this on a
+shared machine and do not expose the port.
 
 ## Durability
 
 | | Survives a restart |
 | --- | --- |
-| Messages, bodies, delivery state | **yes** — held in memory and appended to `.run/mail.jsonl`, replayed on boot |
+| Messages, bodies, delivery state | **yes** — appended to a log and replayed on boot |
 | Deletions | yes, as tombstones; `agx restore <id>` undoes one |
-| Deleted bodies | **still readable in the log** until purged — a delete hides, `--purge` erases |
-| Session registry | rebuilt from `agents.json` |
-| Wait graph (who is blocked on whom) | **no** — a blocking `mail_wait` dies with the process |
+| Deleted bodies | still in the log until purged — a delete hides, `--purge` erases |
+| Session registry | rebuilt from the seed file |
+| Blocking waits | **no** — a blocked `mail_wait` dies with the process |
 
-Appends are not `fsync`ed, so a power loss can leave a torn last line, which is
-skipped on replay. Compaction past 5000 lines rewrites the log from live records
-only, and is the one operation that makes a delete permanent.
+Appends are not flushed to disk, so a power loss can leave a torn last line,
+which is skipped on replay. Compaction past 5000 lines rewrites the log from live
+records only, and is the one operation that makes a delete permanent.
 
 ## Known weaknesses
 
-- **No tests.** Cycle detection, tombstone replay, deferred flushing and submit
-  verification were each verified once by hand. Treat behavioural claims here as
-  "seen working", not "proven".
+- **No tests.** Several behaviours were verified once by hand. Treat claims here
+  as "seen working", not "proven".
 - **Blocked agents stall delivery**, and only a human clears them.
-- **No guaranteed delivery** — the receiver is an LLM deciding what to attend to.
-  A nudge is a suggestion.
-- **Spawned sessions are short-lived** in testing: `agx spawn` delivers and gets
-  answers, but the panes do not always persist. Cause unknown.
+- **No guaranteed delivery** — the receiver is a model deciding what to attend
+  to. A nudge is a suggestion.
+- **Spawned sessions are short-lived** in testing: tasks are delivered and
+  answered, but the panes do not always persist. Cause unknown.
 - **The MCP surface is unexercised.** Six tools are registered and tested only by
-  curl; no agent has called them, because `bootstrap --write` has not been run.
+  hand; no agent has called them.
 - **herdr is load-bearing.** Delivery is text into a terminal, so this needs Node
-  *and* herdr *and* agents already living in panes. Alternatives need only a
-  runtime. That prerequisite is self-inflicted by the delivery mechanism.
-
-## Which herdr
-
-| | 0.7.1 | 0.9.x |
-| --- | --- | --- |
-| Submitting a prompt | absent | `agent prompt … [--wait] [--until STATUS]` |
-| Starting an agent | `agent start <name> [--cwd]` | `agent start <name> --kind KIND --pane ID` |
-| `agent --help` format | full signatures | Commands block of bare names |
-
-Nothing compares versions at runtime: the adapter probes for the command it wants
-and falls back.
-
-One finding does not move with herdr versions, because it is Claude Code
-behaviour: **`/btw` has no tools.** It answers without derailing the main task,
-but reports *"No tools here. Cannot run command."* — so it can never reach
-`mail_inbox`, which is why mail for a busy target is deferred rather than
-delivered as a side question.
+  *and* herdr *and* agents already in panes. Alternatives need only a runtime.
 
 ## Prior art
 
 Local agent-to-agent messaging is well-trodden — over SQLite, over MCP tools,
-over file queues — and Claude Code now messages its own sessions natively. Each
-of those asks only for a runtime. This one takes a different trade: delivery is
-text typed into a terminal, which is why it needs herdr and panes, and which is
-what lets it reach an agent that speaks no protocol at all, say *why* a message
-did not land, and separate a first-hand request from a relayed one.
+over file queues — and Claude Code now messages its own sessions natively, which
+is better than this wherever both ends are Claude. Each of those asks only for a
+runtime. This one takes a different trade: delivery is text typed into a
+terminal, which is why it needs herdr and panes, and which is what lets it reach
+an agent that speaks no protocol at all, say *why* a message did not land, and
+separate a first-hand request from a relayed one.
 
 If that trade does not describe your setup, a SQLite or file-based bus will serve
 you better.
 
-## Escape hatches
+## Settings
 
 | | |
 | --- | --- |
 | `AGX_PORT` | default 7777 |
-| `AGX_ME` / `AGX_FOR` | override your identity / the human named in `--for` |
+| `AGX_ME` / `AGX_FOR` | your identity / the human named when you pass `--for` |
 | `AGX_STALL_MS` | stall threshold, default 60000 |
 | `AGX_CONFIRM_MS` | delivery-confirmation window, default 8000 |
-| `AGX_DRY_NUDGE=1` | log nudges instead of writing to a TTY |
-| `AGX_FORCE_TTY_NUDGE=1` | use the 0.7.x typed path even where `agent prompt` exists |
+| `AGX_MAX_THREAD` / `AGX_MAX_PAIR` / `AGX_MAX_PAIR_MINUTES` | runaway caps |
+| `AGX_GUARD_ALL=1` | apply those caps to your own sessions too |
 | `AGX_NO_AUTH=1` | disable the token check |
-| `AGX_ALLOW_SENDER_OVERRIDE=1` | permit a sender name that contradicts the observed pane |
+| `AGX_DRY_NUDGE=1` | log notifications instead of writing to a terminal |
+| `AGX_FORCE_TTY_NUDGE=1` | use the typed path even where the native command exists |
 | `AGX_SEED` / `AGX_STORE` / `AGX_POLL_MS` | seed file, message log, poll interval |
 
 MIT licensed.
