@@ -469,7 +469,10 @@ EOF
       KIND="$(my_kind)"
       if [ -z "$KIND" ]; then
         KIND="claude"
-        echo "agx: could not tell what kind of agent you are; starting $KIND. Pass --kind to choose." >&2
+        echo "agx: could not tell what agent you are running, so starting $KIND." >&2
+        echo "     Pass --kind (agy for Antigravity, codex, cursor, …) or set AGX_KIND." >&2
+      else
+        echo "agx: starting a $KIND session, matching this one." >&2
       fi
     fi
     command -v herdr >/dev/null || { echo "agx: herdr is required to open a session" >&2; exit 1; }

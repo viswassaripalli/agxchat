@@ -308,6 +308,57 @@ export async function explainAgent(target: string): Promise<AgentExplanation | n
   }
 }
 
+/** Agent kinds this herdr can start, read from its own help output. */
+let knownKinds: string[] | null = null;
+
+export async function herdrKinds(): Promise<string[]> {
+  if (knownKinds) return knownKinds;
+  try {
+    const { stdout } = await exec(HERDR, ['agent', 'start', '--help']);
+    const line = stdout.match(/possible values:\s*([^\]]+)/)?.[1] ?? '';
+    knownKinds = line
+      .split(',')
+      .map((x) => x.trim())
+      .filter(Boolean);
+  } catch {
+    knownKinds = [];
+  }
+  return knownKinds;
+}
+
+/**
+ * What is actually running in a pane, when herdr has not classified it.
+ *
+ * herdr only labels agent kinds it ships an integration for, so a pane running
+ * one it does not know reports no kind at all — and a session asked to start
+ * "another agent like me" would fall back to a default that is not what the
+ * user runs. The process table says plainly what is there.
+ */
+export async function inferKind(paneId: string): Promise<string | null> {
+  try {
+    const { stdout } = await exec(HERDR, ['pane', 'process-info', '--pane', paneId], {
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const info = (JSON.parse(stdout)?.result ?? {}).process_info ?? {};
+    const kinds = await herdrKinds();
+    const names: string[] = [];
+    for (const proc of info.foreground_processes ?? []) {
+      for (const field of [proc?.argv0, proc?.name, ...(proc?.argv ?? [])]) {
+        if (typeof field === 'string' && field) names.push(basename(field).toLowerCase());
+      }
+    }
+    // cursor ships its CLI as cursor-agent; everything else matches by name.
+    const alias: Record<string, string> = { 'cursor-agent': 'cursor' };
+    for (const n of names) {
+      const candidate = alias[n] ?? n;
+      if (kinds.includes(candidate)) return candidate;
+    }
+  } catch {
+    /* pane gone, or herdr cannot say */
+  }
+  return null;
+}
+
 export async function herdrVersion(): Promise<string> {
   const { stdout } = await exec(HERDR, ['--version']);
   return stdout.trim();
