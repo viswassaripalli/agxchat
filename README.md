@@ -29,7 +29,7 @@ MCP-over-HTTP. [herdr](https://herdr.dev) carries the wake-up.
 | **git** | to clone and update |
 | **[herdr](https://herdr.dev)** | 0.7.1 or newer; 0.9+ recommended — delivery is native there |
 | **OS** | macOS and Linux. Origin verification uses `lsof` and `ps`; without them it degrades to self-reported |
-| **Agents** | already running in herdr panes — Claude Code, Codex, Cursor, opencode, Gemini, Copilot and others herdr detects |
+| **Agents** | already running in herdr panes. herdr recognises Claude Code, Codex, Cursor, opencode, Gemini, Copilot and more; anything it does not recognise is still reachable, see below |
 
 ## Download and install
 
@@ -52,8 +52,10 @@ Two steps reach outside the install directory and can be skipped:
 
 **Teaching your sessions.** `agx` works as soon as it is on PATH, but a session
 only reaches for it if told to. `agx rule install` writes a marked block into
-every agent instruction file it finds — Claude's, Codex's, Cursor's, opencode's
-— backing each up first. `agx rule targets` lists them, `show` prints the text,
+every agent instruction file it finds — Claude, Codex, Cursor, opencode,
+Antigravity (`~/.gemini/AGENTS.md` and `GEMINI.md`) — backing each up first.
+For an agent not on that list, name its file:
+`AGX_RULE_TARGETS=~/.thatagent/AGENTS.md agx rule install`. `agx rule targets` lists them, `show` prints the text,
 `remove` takes it out. Instruction files are read at session start, so restart a
 session for it to apply.
 
@@ -211,6 +213,23 @@ then neither read, engaged with, nor answered within `AGX_STALL_MS` (60s), while
 its target is not working, gets flagged. The reason comes from herdr's own
 detection rules, which know what a permission prompt looks like for each agent
 kind. Reading or engaging clears it; nothing is ever re-nudged.
+
+## Agents herdr does not recognise
+
+herdr identifies the agent kinds it ships integrations for. A pane running
+anything else — a newer CLI, a private tool, a plain shell — never appears as an
+agent, and used to be unaddressable.
+
+Those panes are now targets too, with one restriction that matters: **they
+answer only to their pane id or an explicit pane label**, never to a name
+derived from their directory. A pane herdr cannot identify might be an agent it
+has no integration for, or it might be a shell, where a delivered message would
+be executed as a command. So `ask backend …` will not land in a shell that
+happens to sit in the backend repo, while `agx send w6:p4 …` deliberately will.
+
+Delivery to such a pane says so: *"herdr does not recognise what runs in that
+pane, so the text was typed in as-is"*. `AGX_AGENTS_ONLY=1` restricts targets to
+recognised agents again.
 
 ## Identity
 
