@@ -255,9 +255,11 @@ function App() {
   const [draft, setDraft] = useState({ to: '', subject: '', body: '' });
   const [tick, setTick] = useState(0);
 
-  // Ages are relative, so the list must repaint even when nothing arrives.
+  // Ages are relative, so the list must repaint even when nothing arrives — but
+  // once every five seconds is enough for a column that reads "6m", and every
+  // tick used to rebuild the entire thread tree below.
   useEffect(() => {
-    const t = setInterval(() => setTick((v) => v + 1), 1000);
+    const t = setInterval(() => setTick((v) => v + 1), 5000);
     return () => clearInterval(t);
   }, []);
 
@@ -300,6 +302,9 @@ function App() {
     };
   }, []);
 
+  // Deliberately not keyed on `tick`: relative ages are read from Date.now()
+  // during render, so a repaint does not need the tree rebuilt. Rebuilding it
+  // every second was allocating a full set of thread objects per tick.
   const threads = useMemo(() => {
     const built = buildThreads(mail);
     if (!byPair) return built;
@@ -323,7 +328,7 @@ function App() {
       });
     }
     return [...pairs.values()].sort((x, y) => y.lastAt - x.lastAt);
-  }, [mail, tick, byPair]);
+  }, [mail, byPair]);
   const visible = useMemo(() => (onlyAttention ? threads.filter((t) => t.needsAttention) : threads), [threads, onlyAttention]);
   const attentionCount = threads.filter((t) => t.needsAttention).length;
 
