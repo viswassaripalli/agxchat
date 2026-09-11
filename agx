@@ -472,7 +472,10 @@ print(json.load(sys.stdin).get('result',{}).get('pane',{}).get('pane_id') or '')
         # The agent DID start; it is sitting at its own first-run prompt (for
         # Claude, the "do you trust this folder" dialog). herdr reports this as
         # a failure, which it is not — the session exists and needs a human.
-        echo "agx: started, but $NAME is blocked at its startup prompt — approve it in pane $NEW_PANE" >&2 ;;
+        echo "agx: $NAME started but is waiting at its own startup prompt in pane $NEW_PANE." >&2
+        echo "     Answer it there — for Claude in a new directory the default option is \"No, exit\", so" >&2
+        echo "     pressing Enter without choosing closes the session. Its task is queued and will be" >&2
+        echo "     delivered once the prompt is answered." >&2 ;;
       *'"error"'*)
         echo "agx: herdr could not start a '$KIND' agent in $NEW_PANE:" >&2
         printf '%s\n' "$START_OUT" | head -3 >&2
@@ -526,6 +529,8 @@ PYEOF
       case "$OPEN_OUT" in *blocked\ at\ its\ startup\ prompt*) printf 'needs approval in its pane; ' ;; esac
       # Wait for the agent to be ready; a nudge into a starting session is lost.
       herdr agent wait "$NAME" --until idle --until done --timeout 60000 >/dev/null 2>&1 || true
+      # Spawning into an unfamiliar directory raises a trust prompt; the task is
+      # still sent, but the server holds it rather than typing over the dialog.
       TASK="${TASKS[$((i-1))]:-}"
       if [ -z "$TASK" ]; then
         echo "started (no task given)"

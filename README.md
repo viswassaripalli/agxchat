@@ -336,8 +336,13 @@ records only, and is the one operation that makes a delete permanent.
 - **Blocked agents stall delivery**, and only a human clears them.
 - **No guaranteed delivery** — the receiver is a model deciding what to attend
   to. A nudge is a suggestion.
-- **Spawned sessions are short-lived** in testing: tasks are delivered and
-  answered, but the panes do not always persist. Cause unknown.
+- **A spawned session waits for you before it can work.** Starting an agent in
+  an unfamiliar directory raises that agent's own trust prompt, and for Claude
+  the default option there is "No, exit" — so anything that presses Enter closes
+  the session and takes its pane with it. Nothing here types into a pane with a
+  prompt on screen, and a task sent meanwhile is held and delivered once you
+  answer, but the session does nothing until you do. Spawning into a directory
+  the agent already trusts avoids it entirely.
 - **The MCP surface is unexercised.** Six tools are registered and tested only by
   hand; no agent has called them.
 - **herdr is load-bearing.** Delivery is text into a terminal, so this needs Node
