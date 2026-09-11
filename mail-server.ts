@@ -722,6 +722,19 @@ function nudgeText(m: Mail): string {
 
 async function nudgeNow(m: Mail, paneId: string, status: string) {
   try {
+    // Never type into a pane with something on screen waiting for a human.
+    // Reported status is not enough: a session still starting can read `idle`
+    // while its trust dialog is up, and that dialog's default option is
+    // "No, exit" — so a delivery, or the retry that fires on an idle
+    // transition, answers it and takes the session and its pane down.
+    const onScreen = await explainAgent(paneId);
+    if (onScreen?.visibleBlocker) {
+      m.delivery = 'target_blocked';
+      m.deliveryDetail =
+        `pane ${paneId} has a prompt on screen${onScreen.matchedRule ? ` (${onScreen.matchedRule})` : ''}; ` +
+        'not typing into it — answer it and this will be delivered';
+      return;
+    }
     const res = await nudge(paneId, nudgeText(m));
     m.delivery = m.inline ? 'nudged_inline' : 'nudged_idle';
     m.nudgedAt = Date.now();
