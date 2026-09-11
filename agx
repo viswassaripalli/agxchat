@@ -591,8 +591,16 @@ except Exception: pass" 2>/dev/null)
     echo "watch replies with: agx inbox    ·    see them live in the chat view"
     ;;
   spawned)
-    python3 - "$HOME_DIR/.run/spawned.json" <<'PYEOF'
-import json, sys, pathlib, time
+    # Liveness is checked rather than remembered: a spawned session can exit on
+    # its own, and a list that still shows it is worse than no list.
+    LIVE="$(herdr pane list 2>/dev/null | python3 -c "
+import json,sys
+try: print(' '.join(p['pane_id'] for p in json.load(sys.stdin)['result']['panes']))
+except Exception: pass
+" 2>/dev/null || true)"
+    LIVE="$LIVE" python3 - "$HOME_DIR/.run/spawned.json" <<'PYEOF'
+import json, os, sys, pathlib, time
+live = set((os.environ.get('LIVE') or '').split())
 try:
     rows = json.loads(pathlib.Path(sys.argv[1]).read_text())
 except Exception:
@@ -601,7 +609,11 @@ if not rows:
     print('no sessions started by agx')
 for r in rows:
     age = int((time.time() * 1000 - r['at']) / 60000)
-    print(f"{r['name']:14} {r['kind']:8} {r['pane']:8} started {age}m ago by {r['by']}  {r['cwd']}")
+    state = 'alive' if r['pane'] in live else 'GONE '
+    print(f"{state} {r['name']:14} {r['kind']:8} {r['pane']:8} {age}m ago by {r['by']}  {r['cwd']}")
+if rows and not any(r['pane'] in live for r in rows):
+    print()
+    print('none are still running — agents that exit on their own take their pane with them')
 PYEOF
     ;;
   kill)
