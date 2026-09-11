@@ -437,6 +437,91 @@ EOF
       *) echo "usage: agx rule install|remove|show|targets [--claude-only]" >&2; exit 2 ;;
     esac
     ;;
+  open)
+    NAME="${1:?usage: agx open <name> [--kind claude|codex|gemini|...] [--cwd PATH] [--space]}"; shift || true
+    KIND="claude"; NEW_CWD="$PWD"; SPACE=0
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --kind) KIND="$2"; shift 2 ;;
+        --cwd) NEW_CWD="$2"; shift 2 ;;
+        --space) SPACE=1; shift ;;
+        *) shift ;;
+      esac
+    done
+    command -v herdr >/dev/null || { echo "agx: herdr is required to open a session" >&2; exit 1; }
+    # A pane must exist before an agent can be started in it.
+    if [ "$SPACE" -eq 1 ]; then
+      CREATED=$(herdr workspace create --cwd "$NEW_CWD" --label "$NAME" --no-focus)
+      NEW_PANE=$(printf '%s' "$CREATED" | python3 -c "
+import json,sys
+r = json.load(sys.stdin).get('result', {})
+print(r.get('root_pane',{}).get('pane_id') or r.get('workspace',{}).get('active_pane_id') or '')")
+    else
+      NEW_PANE=$(herdr pane split --direction right --cwd "$NEW_CWD" --no-focus | python3 -c "
+import json,sys
+print(json.load(sys.stdin).get('result',{}).get('pane',{}).get('pane_id') or '')")
+    fi
+    [ -n "$NEW_PANE" ] || { echo "agx: could not create a pane" >&2; exit 1; }
+    START_OUT="$(herdr agent start "$NAME" --kind "$KIND" --pane "$NEW_PANE" 2>&1 || true)"
+    case "$START_OUT" in
+      *agent_name_taken*) echo "agx: the name \"$NAME\" is already in use — pick another" >&2; exit 1 ;;
+      *agent_not_ready*)
+        # The agent DID start; it is sitting at its own first-run prompt (for
+        # Claude, the "do you trust this folder" dialog). herdr reports this as
+        # a failure, which it is not — the session exists and needs a human.
+        echo "agx: started, but $NAME is blocked at its startup prompt — approve it in pane $NEW_PANE" >&2 ;;
+      *'"error"'*)
+        echo "agx: herdr could not start a '$KIND' agent in $NEW_PANE:" >&2
+        printf '%s\n' "$START_OUT" | head -3 >&2
+        exit 1 ;;
+    esac
+    herdr pane rename "$NEW_PANE" "$NAME" >/dev/null 2>&1 || true
+    echo "started $KIND as \"$NAME\" in pane $NEW_PANE (cwd $NEW_CWD)"
+    echo "it becomes addressable once herdr sees it — check with: agx agents"
+    ;;
+  spawn)
+    # Start several agents and hand each a different task. Sends the task as
+    # mail rather than typing it directly, so every answer comes back into the
+    # mailbox as a thread instead of being stranded in a pane you must go read.
+    KIND="claude"; NEW_CWD="$PWD"; PREFIX=""; COUNT=0; TASKS=()
+    while [ $# -gt 0 ]; do
+      case "$1" in
+        --kind) KIND="$2"; shift 2 ;;
+        --cwd) NEW_CWD="$2"; shift 2 ;;
+        --prefix) PREFIX="$2"; shift 2 ;;
+        --task) TASKS+=("$2"); shift 2 ;;
+        ''|*[!0-9]*) TASKS+=("$1"); shift ;;   # a bare string is a task
+        *) COUNT="$1"; shift ;;                 # a bare number is a count
+      esac
+    done
+    [ -z "$PREFIX" ] && PREFIX="$KIND"
+    [ "${#TASKS[@]}" -gt 0 ] && COUNT="${#TASKS[@]}"
+    [ "$COUNT" -gt 0 ] 2>/dev/null || { echo "usage: agx spawn <n> | agx spawn --task \"...\" --task \"...\"" >&2; exit 2; }
+    [ "$COUNT" -gt 8 ] && { echo "agx: refusing to spawn $COUNT sessions at once — each is a real agent" >&2; exit 1; }
+
+    for i in $(seq 1 "$COUNT"); do
+      NAME="$PREFIX-$i"
+      printf '%s: ' "$NAME"
+      OPEN_OUT="$("$SELF" open "$NAME" --kind "$KIND" --cwd "$NEW_CWD" 2>&1)" || {
+        printf '%s\n' "$OPEN_OUT" | tail -1 >&2; continue
+      }
+      case "$OPEN_OUT" in *blocked\ at\ its\ startup\ prompt*) printf 'needs approval in its pane; ' ;; esac
+      # Wait for the agent to be ready; a nudge into a starting session is lost.
+      herdr agent wait "$NAME" --until idle --until done --timeout 60000 >/dev/null 2>&1 || true
+      TASK="${TASKS[$((i-1))]:-}"
+      if [ -z "$TASK" ]; then
+        echo "started (no task given)"
+        continue
+      fi
+      MAIL=$("$SELF" send "$NAME" "Task $i" "$TASK" --for "${AGX_FOR:-$USER}" 2>/dev/null | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin).get('id',''))
+except Exception: pass" 2>/dev/null)
+      echo "started, task sent as ${MAIL:-<send failed>}"
+    done
+    echo
+    echo "watch replies with: agx inbox    ·    see them live in the chat view"
+    ;;
   whoami)
     api "/whoami?pane=$(my_pane)" | jq_or_cat
     ;;

@@ -536,9 +536,18 @@ async function nudgeNow(m: Mail, paneId: string, status: string) {
   }
 }
 
-/** Called on every idle/done transition — this is what makes deferral work. */
+/**
+ * Called on every idle/done transition — this is what makes deferral work.
+ *
+ * `target_blocked` is flushed here too: blocked means a human has not answered
+ * something yet, which is temporary by nature. A session spawned into a new
+ * directory sits blocked on its own trust prompt, and mail sent to it in that
+ * window used to need re-sending by hand once the prompt was answered.
+ */
 async function flushDeferred(paneId: string, status: string) {
-  const pending = [...mail.values()].filter((m) => m.delivery === 'deferred' && m.targetPaneId === paneId);
+  const pending = [...mail.values()].filter(
+    (m) => (m.delivery === 'deferred' || m.delivery === 'target_blocked') && m.targetPaneId === paneId,
+  );
   for (const m of pending) {
     await nudgeNow(m, paneId, status);
     await persist(m);
