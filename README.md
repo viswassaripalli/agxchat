@@ -101,14 +101,20 @@ or a shared mount.
 
 | You say | What happens |
 | --- | --- |
-| *"open a Claude session called reviewer in the api repo"* | `agx open reviewer --kind claude --cwd …` |
-| *"open a Codex session for scratch work"* | same, `--kind codex` |
+| *"open a session called reviewer in the api repo"* | `agx open reviewer --cwd …` — started as whatever kind you are |
+| *"open a Codex session for scratch work"* | `--kind codex` to choose a different one |
 | *"spawn three workers and give each of these tasks…"* | `agx spawn --task … --task … --task …` |
 | *"what did you start?"* | `agx spawned` — names, kinds, ages, who asked |
 | *"kill the workers"* | `agx kill --all` — only sessions agx started |
 
+New sessions default to **the kind of agent asking for them**: a Codex session
+spawning workers gets Codex, an Antigravity session gets Antigravity. `--kind`
+overrides, `AGX_KIND` sets a default, and if the caller's own kind cannot be
+determined it says so before falling back to Claude.
+
 ```bash
-agx open reviewer --kind claude --cwd ~/code/api
+agx open reviewer --cwd ~/code/api            # same kind as you
+agx open reviewer --kind codex --cwd ~/code/api
 agx spawn --kind claude --cwd ~/code/web \
   --task "Read src/routes and list every unauthenticated endpoint" \
   --task "Check package.json for dependencies with no lockfile entry"

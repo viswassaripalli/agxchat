@@ -1812,6 +1812,9 @@ app.get('/whoami', async (req, res) => {
     : [];
   res.json({
     identity: me?.name ?? null,
+    // What herdr thinks is running here, so a session spawning another can
+    // start its own kind rather than assuming somebody else's.
+    kind: mine?.kind ?? null,
     your_pane: paneId,
     canonical: me?.canonical ?? null,
     base_name: me?.base ?? null,

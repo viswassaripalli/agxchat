@@ -58,6 +58,20 @@ HOME_DIR="${AGX_HOME:-$(cd "$(dirname "$SELF")" && pwd)}"
 AUTH=(-H "X-AGX-Token: $(agx_token 2>/dev/null || true)")
 BASE="http://127.0.0.1:$PORT"
 
+# What kind of agent is asking. A session told to start another should start
+# its own kind: defaulting to claude meant an Antigravity or Codex session
+# spawning Claude sessions, which is nobody's intent.
+my_kind() {
+  if [ -n "${AGX_KIND:-}" ]; then printf '%s' "$AGX_KIND"; return 0; fi
+  local pane; pane="$(my_pane)"
+  [ -z "$pane" ] && return 0
+  curl -s --max-time 2 "${AUTH[@]}" "$BASE/whoami?pane=$pane" 2>/dev/null | python3 -c "
+import json,sys
+try: print(json.load(sys.stdin).get('kind') or '')
+except Exception: pass
+" 2>/dev/null || true
+}
+
 # Which pane this command is running in. Defined before first use: bash
 # resolves functions at call time, and the identity block below runs early —
 # with the definition further down it failed with "my_pane: command not found".
@@ -451,6 +465,13 @@ EOF
         *) shift ;;
       esac
     done
+    if [ -z "$KIND" ]; then
+      KIND="$(my_kind)"
+      if [ -z "$KIND" ]; then
+        KIND="claude"
+        echo "agx: could not tell what kind of agent you are; starting $KIND. Pass --kind to choose." >&2
+      fi
+    fi
     command -v herdr >/dev/null || { echo "agx: herdr is required to open a session" >&2; exit 1; }
     # A pane must exist before an agent can be started in it.
     if [ "$SPACE" -eq 1 ]; then
@@ -504,7 +525,7 @@ PYEOF
     # Start several agents and hand each a different task. Sends the task as
     # mail rather than typing it directly, so every answer comes back into the
     # mailbox as a thread instead of being stranded in a pane you must go read.
-    KIND="claude"; NEW_CWD="$PWD"; PREFIX=""; COUNT=0; TASKS=()
+    KIND=""; NEW_CWD="$PWD"; PREFIX=""; COUNT=0; TASKS=()
     while [ $# -gt 0 ]; do
       case "$1" in
         --kind) KIND="$2"; shift 2 ;;
@@ -515,6 +536,10 @@ PYEOF
         *) COUNT="$1"; shift ;;                 # a bare number is a count
       esac
     done
+    if [ -z "$KIND" ]; then
+      KIND="$(my_kind)"
+      [ -z "$KIND" ] && KIND="claude"
+    fi
     [ -z "$PREFIX" ] && PREFIX="$KIND"
     [ "${#TASKS[@]}" -gt 0 ] && COUNT="${#TASKS[@]}"
     [ "$COUNT" -gt 0 ] 2>/dev/null || { echo "usage: agx spawn <n> | agx spawn --task \"...\" --task \"...\"" >&2; exit 2; }
