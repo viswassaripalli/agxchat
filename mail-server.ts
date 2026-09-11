@@ -925,6 +925,88 @@ async function checkStalls() {
   }
 }
 
+/**
+ * A spawned session's pane disappearing is worth saying out loud.
+ *
+ * It can mean the agent finished and exited, that its CLI never stays resident,
+ * or that something answered its startup prompt — and from the outside all
+ * three look like "the workers cleaned themselves up". Whoever started it is
+ * told which session went, how long it lasted, and whether it had answered.
+ */
+async function announceExit(paneId: string) {
+  const spawned = await readSpawned();
+  const gone = spawned.find((sp) => sp.pane === paneId);
+  if (!gone) return; // not one of ours; a pane closing is otherwise routine
+
+  // Drop the record before sending: announceExit is reached from both the
+  // agent-state event and the pane watcher, and one exit is one message.
+  await writeFile('.run/spawned.json', JSON.stringify(spawned.filter((sp) => sp.pane !== paneId), null, 2)).catch(
+    () => {},
+  );
+
+  const theirs = [...mail.values()].filter((m) => key(m.to) === key(gone.name) || key(m.from) === key(gone.name));
+  const answered = theirs.filter((m) => key(m.from) === key(gone.name)).length;
+  const received = theirs.filter((m) => key(m.to) === key(gone.name)).length;
+  const lived = Math.round((Date.now() - gone.at) / 60000);
+
+  const m: Mail = {
+    id: newId(),
+    kind: 'note',
+    from: 'agxchat',
+    to: gone.by,
+    subject: `${gone.name} is gone`,
+    body:
+      `The ${gone.kind} session "${gone.name}" (pane ${paneId}) closed after ${lived} minute(s). ` +
+      `It received ${received} message(s) and answered ${answered}. ` +
+      'Nothing here closed it: either it finished and exited, its CLI does not stay resident, or its startup prompt was answered. ' +
+      `Anything still addressed to ${gone.name} will now be undeliverable.`,
+    pointers: [],
+    expect: null,
+    replyTo: null,
+    data: null,
+    createdAt: Date.now(),
+    readAt: null,
+    delivery: 'queued',
+    deliveryDetail: null,
+    targetPaneId: null,
+    inline: true,
+    notify: true,
+    requestedBy: null,
+    via: null,
+    fromPaneId: null,
+    senderConsistent: null,
+    senderObserved: false,
+    preferPaneId: null,
+    nudgedAt: null,
+    engagedAt: null,
+    confirmedAt: null,
+  };
+  mail.set(m.id, m);
+  await persist(m);
+  bus.emit({ type: 'mail', mail: m });
+  await deliver(m);
+  await persist(m);
+}
+
+/**
+ * A pane can vanish before herdr ever classifies it as an agent — a session
+ * that exits at its own trust prompt never reaches `agent list` at all — so
+ * spawned panes are watched against the raw pane list rather than against
+ * agent transitions. Explicit `agx kill` drops the record first, so only
+ * exits nobody asked for reach announceExit.
+ */
+async function watchSpawnedPanes() {
+  const spawned = await readSpawned();
+  if (!spawned.length) return;
+  const live = new Set(
+    (await listPlainPanes().catch(() => [] as HerdrAgent[])).map((p) => p.paneId).filter(Boolean) as string[],
+  );
+  if (!live.size) return; // herdr unreachable: absence proves nothing
+  for (const sp of spawned) {
+    if (!live.has(sp.pane)) await announceExit(sp.pane);
+  }
+}
+
 bus.subscribe((ev) => {
   if (ev.type === 'agent_state' && (ev.to === 'idle' || ev.to === 'done')) {
     void flushDeferred(ev.paneId, ev.to);
@@ -1963,3 +2045,6 @@ startAgentPoll(bus, Number(process.env.AGX_POLL_MS ?? process.env.HERDR_MAIL_POL
 
 const stallTimer = setInterval(() => void checkStalls(), Math.max(5000, Math.floor(STALL_MS / 3)));
 stallTimer.unref?.();
+
+const exitTimer = setInterval(() => void watchSpawnedPanes(), 5000);
+exitTimer.unref?.();

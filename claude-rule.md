@@ -39,8 +39,12 @@ is; `agx whoami` names your own mailbox.
   context; use `agx` when the work needs its own session, another repo, a
   different agent, or an answer that arrives as mail.
 - `agx spawned` lists what you started and `agx kill <name>` (or `--all`) closes
-  them. Close what you started once its work is done — each one is a real agent
-  spending real tokens.
+  them. Do NOT close them on your own judgement: a session that has answered may
+  still be mid-task, and "the conversation looks finished" is not something you
+  can see from the outside. When you believe the work is done, say what is still
+  running and give the human the kill command — killing is theirs to run. Kill
+  without asking only when the human asked you to, or when you started a session
+  by mistake and it has done nothing.
 - A session started in an unfamiliar directory stops at that agent's own trust
   prompt and does nothing until a human answers it. Say so rather than waiting.
 - Needs the server up: `agx serve` (http://127.0.0.1:7777).
