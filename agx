@@ -157,7 +157,7 @@ case "$CMD" in
     # stdin and process group, so `agx serve` blocks instead of returning.
     (
       cd "$HOME_DIR" || exit 1
-      nohup npx tsx mail-server.ts < /dev/null > "$HOME_DIR/.run/server.log" 2>&1 &
+      nohup "$HOME_DIR/node_modules/.bin/tsx" mail-server.ts < /dev/null > "$HOME_DIR/.run/server.log" 2>&1 &
       echo $! > "$HOME_DIR/.run/server.pid"
       disown 2>/dev/null || true
     )
@@ -204,10 +204,10 @@ print(
         exit 1
       fi
       herdr pane rename "$PANE" chat >/dev/null 2>&1 || true
-      herdr pane run "$PANE" "cd $HOME_DIR && npx tsx mail-tui.tsx" >/dev/null
+      herdr pane run "$PANE" "cd $HOME_DIR && ./node_modules/.bin/tsx mail-tui.tsx" >/dev/null
       echo "chat in workspace AGxChat, pane $PANE"
     elif [ -t 0 ] && [ -t 1 ]; then
-      (cd "$HOME_DIR" && exec npx tsx mail-tui.tsx)
+      (cd "$HOME_DIR" && exec "$HOME_DIR/node_modules/.bin/tsx" mail-tui.tsx)
     else
       # No TTY: Ink needs raw mode and dies with a stack trace that says
       # nothing about why. This happens whenever `agx chat` is run from inside
