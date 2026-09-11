@@ -286,6 +286,19 @@ async function readSpawned(): Promise<SpawnedSession[]> {
   }
 }
 
+/**
+ * Names of sessions agx started, cached briefly because it is consulted on
+ * every send.
+ */
+let spawnedCache: { at: number; names: Set<string> } = { at: 0, names: new Set() };
+
+async function spawnedNames(): Promise<Set<string>> {
+  if (Date.now() - spawnedCache.at < 5000) return spawnedCache.names;
+  const names = new Set((await readSpawned()).map((sp) => key(sp.name)));
+  spawnedCache = { at: Date.now(), names };
+  return names;
+}
+
 /** Pairs already reported, so a loop is announced once rather than per message. */
 const announced = new Map<string, number>();
 
@@ -371,7 +384,15 @@ function threadSize(anyId: string | null): number {
  * Why a send should be refused, or null. Applied to every path — MCP tools,
  * REST, replies — because a loop does not care which door it came through.
  */
-function runawayReason(from: string, to: string, threadAnchor: string | null): string | null {
+async function runawayReason(from: string, to: string, threadAnchor: string | null): Promise<string | null> {
+  // Only sessions agx started are governed. A person's own sessions are their
+  // business: a long exchange there is work, not a runaway, and throttling it
+  // would be this tool deciding how long its user may think. Set
+  // AGX_GUARD_ALL=1 to apply the caps to everything.
+  if (process.env.AGX_GUARD_ALL !== '1') {
+    const spawned = await spawnedNames();
+    if (!spawned.has(key(from))) return null;
+  }
   const size = threadSize(threadAnchor);
   if (size >= MAX_THREAD_MESSAGES) {
     return (
@@ -1122,7 +1143,7 @@ function buildMcpServer(identity: string | null) {
 
       if (thread && !mail.has(thread)) return fail('unknown_thread', { thread });
 
-      const runaway = runawayReason(from, resolved.name, thread ?? null);
+      const runaway = await runawayReason(from, resolved.name, thread ?? null);
       if (runaway) {
         void announcePause(from, resolved.name, runaway, thread ?? null);
         return fail('runaway_guard', { detail: runaway });
@@ -1246,7 +1267,7 @@ function buildMcpServer(identity: string | null) {
       const orig = mail.get(mail_id);
       if (!orig) return fail('unknown_mail', { mail_id });
       if (key(orig.to) !== key(from)) return fail('not_addressed_to_you', { mail_id, addressed_to: orig.to });
-      const runawayReply = runawayReason(from, orig.from, mail_id);
+      const runawayReply = await runawayReason(from, orig.from, mail_id);
       if (runawayReply) {
         void announcePause(from, orig.from, runawayReply, mail_id);
         return fail('runaway_guard', { detail: runawayReply });
@@ -1564,7 +1585,7 @@ app.post('/mail', async (req, res) => {
   const threadId = typeof req.body?.thread === 'string' && req.body.thread.trim() ? req.body.thread.trim() : null;
   if (threadId && !mail.has(threadId)) return res.status(404).json({ error: 'unknown_thread', thread: threadId });
 
-  const runaway = runawayReason(String(from), resolved.name, threadId);
+  const runaway = await runawayReason(String(from), resolved.name, threadId);
   if (runaway) {
     void announcePause(String(from), resolved.name, runaway, threadId);
     return res.status(429).json({ error: 'runaway_guard', detail: runaway });
@@ -1662,7 +1683,7 @@ app.post('/reply', async (req, res) => {
   if (typeof body !== 'string' || !body.trim()) return res.status(400).json({ error: 'body is required' });
   if (body.length > MAX_BODY) return res.status(413).json({ error: 'body too large; use pointers' });
 
-  const runawayReply = runawayReason(String(from ?? orig.to), orig.from, String(mail_id));
+  const runawayReply = await runawayReason(String(from ?? orig.to), orig.from, String(mail_id));
   if (runawayReply) {
     void announcePause(String(from ?? orig.to), orig.from, runawayReply, String(mail_id));
     return res.status(429).json({ error: 'runaway_guard', detail: runawayReply });
