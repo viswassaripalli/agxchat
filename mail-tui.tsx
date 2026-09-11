@@ -184,7 +184,7 @@ function AgentStrip({ agents, columns }: { agents: Agent[]; columns: number }) {
   );
 }
 
-function ThreadRow({ t, selected, width }: { t: Thread; selected: boolean; width: number }) {
+function ThreadRow({ t, selected, width, unread }: { t: Thread; selected: boolean; width: number; unread: number }) {
   const mine = (name: string) => name.toLowerCase() === ME;
   return (
     <Box flexDirection="column" paddingX={1} backgroundColor={selected ? '#243447' : undefined}>
@@ -199,12 +199,13 @@ function ThreadRow({ t, selected, width }: { t: Thread; selected: boolean; width
         </Text>
       </Text>
       <Box justifyContent="space-between">
-        <Box width={Math.max(10, width - 8)}>
+        <Box width={Math.max(10, width - 12)}>
           <Text wrap="truncate" dimColor={!selected}>
             {' '}
             {t.subject}
           </Text>
         </Box>
+        {unread > 0 && <Text color="cyan">●{unread} </Text>}
         <Text dimColor>{age(Date.now() - t.lastAt)}</Text>
       </Box>
     </Box>
@@ -244,11 +245,22 @@ function App() {
   const [cursor, setCursor] = useState(0);
   const [onlyAttention, setOnlyAttention] = useState(false);
   const [fullBodies, setFullBodies] = useState(false);
-  const [follow, setFollow] = useState(true);
+  const [follow, setFollow] = useState(false);
   /** Off by default: distinct questions are distinct threads. On, every exchange
    *  between the same two agents reads as one conversation — which is what you
    *  want when a session sent six follow-ups as six new threads. */
   const [byPair, setByPair] = useState(false);
+  /**
+   * When each thread was last on screen. A terminal view has no other signal
+   * for "read", so looking at a thread is what marks it.
+   */
+  const [seen, setSeen] = useState<Record<string, number>>({});
+  /**
+   * Stable order by default. Sorting by last activity means a row jumps to the
+   * top the moment a message lands, moving whatever you were reading out from
+   * under you; new threads append instead, and arrivals show as a count.
+   */
+  const [recentFirst, setRecentFirst] = useState(false);
   const [note, setNote] = useState<string | null>(null);
   const [mode, setMode] = useState<'browse' | 'to' | 'subject' | 'body'>('browse');
   const [confirmDelete, setConfirmDelete] = useState<Thread | null>(null);
@@ -329,7 +341,21 @@ function App() {
     }
     return [...pairs.values()].sort((x, y) => y.lastAt - x.lastAt);
   }, [mail, byPair]);
-  const visible = useMemo(() => (onlyAttention ? threads.filter((t) => t.needsAttention) : threads), [threads, onlyAttention]);
+  const ordered = useMemo(
+    () =>
+      recentFirst
+        ? [...threads].sort((x, y) => y.lastAt - x.lastAt)
+        : // Oldest thread first, so existing rows keep their position and a new
+          // conversation appears at the bottom rather than displacing everything.
+          [...threads].sort((x, y) => x.root.createdAt - y.root.createdAt),
+    [threads, recentFirst],
+  );
+  const unreadIn = (t: Thread) => t.messages.filter((m) => m.createdAt > (seen[t.root.id] ?? 0)).length;
+  const visible = useMemo(
+    () => (onlyAttention ? ordered.filter((t) => t.needsAttention) : ordered),
+    [ordered, onlyAttention],
+  );
+  const unreadTotal = ordered.reduce((n, t) => n + unreadIn(t), 0);
   const attentionCount = threads.filter((t) => t.needsAttention).length;
 
   // Follow mode keeps the newest thread selected as traffic arrives.
@@ -338,6 +364,12 @@ function App() {
   }, [follow, visible.length]);
 
   const selected = visible[Math.min(cursor, Math.max(visible.length - 1, 0))];
+
+  useEffect(() => {
+    if (!selected) return;
+    const newest = selected.lastAt;
+    setSeen((prev) => (prev[selected.root.id] === newest ? prev : { ...prev, [selected.root.id]: newest }));
+  }, [selected?.root.id, selected?.lastAt]);
   const columns = stdout?.columns ?? 120;
   const rows = stdout?.rows ?? 40;
   const listWidth = Math.max(28, Math.min(46, Math.floor(columns * 0.34)));
@@ -422,6 +454,10 @@ function App() {
     }
     if (input === 'c') return setFullBodies((v) => !v);
     if (input === 'G') return setFollow((v) => !v);
+    if (input === 'o') {
+      setCursor(0);
+      return setRecentFirst((v) => !v);
+    }
     if (input === 'p') {
       setCursor(0);
       return setByPair((v) => !v);
@@ -462,6 +498,7 @@ function App() {
           {attentionCount > 0 ? ' · ' : ''}
         </Text>
         {attentionCount > 0 && <Text color="red">{attentionCount} need attention</Text>}
+        {unreadTotal > 0 && <Text color="cyan"> · {unreadTotal} unread</Text>}
         <Text> </Text>
         <Text color={onlyAttention ? 'red' : 'gray'} dimColor={!onlyAttention}>
           [{onlyAttention ? 'attention' : 'all'}]
@@ -474,13 +511,23 @@ function App() {
         <Text color={byPair ? 'cyan' : 'gray'} dimColor={!byPair}>
           [{byPair ? 'by pair' : 'by thread'}]
         </Text>
+        <Text> </Text>
+        <Text color={recentFirst ? 'yellow' : 'gray'} dimColor={!recentFirst}>
+          [{recentFirst ? 'recent first' : 'stable order'}]
+        </Text>
         {follow && <Text dimColor> [following]</Text>}
       </Box>
 
       <Box marginTop={1}>
         <Box flexDirection="column" width={listWidth} flexShrink={0} borderStyle="round" borderColor="gray">
           {listSlice.map((t, i) => (
-            <ThreadRow key={t.root.id} t={t} selected={listStart + i === cursor} width={listWidth} />
+            <ThreadRow
+              key={t.root.id}
+              t={t}
+              selected={listStart + i === cursor}
+              width={listWidth}
+              unread={unreadIn(t)}
+            />
           ))}
           {visible.length === 0 && (
             <Text dimColor>{onlyAttention ? '  nothing needs attention' : '  no threads yet'}</Text>
@@ -550,7 +597,7 @@ function App() {
 
       <Text dimColor>
         {mode === 'browse'
-          ? 'j/k move · f filter · c bodies · p pair · i write · d delete · e unblock · G follow · q quit'
+          ? 'j/k move · o order · f filter · c bodies · p pair · i write · d delete · e unblock · G follow · q quit'
           : 'typing…'}
       </Text>
     </Box>
