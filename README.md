@@ -120,6 +120,15 @@ Each task goes out as mail rather than typed text, so every answer threads back
 into the mailbox instead of being stranded in a pane you have to go and read.
 Capped at eight sessions per invocation; each one is a real agent.
 
+**These are not subagents.** Most agent CLIs can spawn internal subagents, and
+asked to "spawn three agents" that is what they will reach for — subagents live
+inside one session, nobody else can see or message them, and they end with the
+turn. `agx open` and `agx spawn` start real sessions in their own panes, each
+with its own mailbox, addressable by name by anyone. The installed rule tells
+sessions which to use when, so ask in plain words and you get panes; if you get
+subagents instead, that session has not picked up the rule — restart it, or
+check `agx rule targets`.
+
 ## Runaway loops
 
 Every nudge asks the recipient to reply, and a reply nudges the sender back. Two
