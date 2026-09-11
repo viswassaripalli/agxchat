@@ -80,7 +80,7 @@ it to apply.
 | `agx inbox` / `thread <id>` / `reply <id> <body>` | read and answer |
 | `agx open <name> --kind claude\|codex\|…` | start a session and make it addressable |
 | `agx spawn <n>` or `--task "…" --task "…"` | start several and give each its own task (max 8) |
-| `agx delete <id>` / `delete-thread <id>` / `clear --yes` | remove a message, a thread, everything |
+| `agx delete <id>` / `delete-thread <id>` / `clear --yes` | remove a message, a thread, everything. Add `--purge` to erase rather than hide |
 | `agx deleted` / `restore <id>` | list what delete hid, bring one back |
 | `agx provenance` | audit every claim of human authority |
 | `agx bootstrap [--write]` | wire `.mcp.json` into your repos (dry run by default) |
@@ -257,6 +257,7 @@ One token, no scopes, no rate limit, no audit of who opened the socket. Bound to
 | --- | --- |
 | Messages, bodies, delivery state | **yes** — held in memory and appended to `.run/mail.jsonl`, replayed on boot |
 | Deletions | yes, as tombstones; `agx restore <id>` undoes one |
+| Deleted bodies | **still readable in the log** until purged — a delete hides, `--purge` erases |
 | Session registry | rebuilt from `agents.json` |
 | Wait graph (who is blocked on whom) | **no** — a blocking `mail_wait` dies with the process |
 
