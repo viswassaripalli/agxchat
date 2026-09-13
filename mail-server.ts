@@ -973,7 +973,10 @@ async function announceExit(paneId: string) {
   const theirs = [...mail.values()].filter((m) => key(m.to) === key(gone.name) || key(m.from) === key(gone.name));
   const answered = theirs.filter((m) => key(m.from) === key(gone.name)).length;
   const received = theirs.filter((m) => key(m.to) === key(gone.name)).length;
-  const lived = Math.round((Date.now() - gone.at) / 60000);
+  // A session that dies in seconds is the case worth seeing — "0 minute(s)"
+  // is where an instant startup failure hides.
+  const secs = Math.max(0, Math.round((Date.now() - gone.at) / 1000));
+  const lived = secs < 90 ? `${secs} second(s)` : `${Math.round(secs / 60)} minute(s)`;
 
   const m: Mail = {
     id: newId(),
@@ -983,7 +986,7 @@ async function announceExit(paneId: string) {
     to: gone.by,
     subject: `${gone.name} is gone`,
     body:
-      `The ${gone.kind} session "${gone.name}" (pane ${paneId}) closed after ${lived} minute(s). ` +
+      `The ${gone.kind} session "${gone.name}" (pane ${paneId}) closed after ${lived}. ` +
       `It received ${received} message(s) and answered ${answered}. ` +
       'Nothing here closed it: either it finished and exited, its CLI does not stay resident, or its startup prompt was answered. ' +
       `Anything still addressed to ${gone.name} will now be undeliverable.`,
