@@ -96,6 +96,21 @@ type Mail = {
   /** false when the recipient reads via the TUI/API and wants no TTY writes. */
   notify: boolean;
   /**
+   * Written by the server itself rather than by any session — an exit notice,
+   * a runaway pause. These are the only messages whose sender is not a guess,
+   * so they are the only ones allowed to say so in the banner. The flag is set
+   * where the record is built and is never read from a request body: a session
+   * that sends mail calling itself "agxchat" must not inherit the label that
+   * means "this came from the server".
+   *
+   * The name itself is deliberately NOT reserved: identities come from
+   * directory names, so anyone with a clone of this repo at ~/src/agxchat is
+   * called "agxchat", and refusing their mail to protect a label would lock
+   * the project's own contributors out of their mailbox. A colliding sender
+   * simply renders the ordinary unverified banner, which is the truth.
+   */
+  system: boolean;
+  /**
    * The human the sender claims asked for this. A HINT, NOT PROOF: the server
    * is localhost and unauthenticated, so any sender can write anything here.
    * It exists because a receiving agent otherwise sees every request as coming
@@ -368,6 +383,7 @@ async function announcePause(from: string, to: string, detail: string, anchor: s
   const m: Mail = {
     id: newId(),
     kind: 'note',
+    system: true,
     from: 'agxchat',
     to: owner,
     subject: `Paused: ${from} and ${to} are looping`,
@@ -743,6 +759,16 @@ function nudgeText(m: Mail): string {
       : `${banner(`agxchat ${m.id}: reply from ${m.from}`)} call mail_inbox`;
   }
 
+  // The server's own notices are the one case where the sender is known rather
+  // than claimed, and the origin/authority clauses are meaningless for them:
+  // there is no pane behind an exit notice and no human behind a runaway pause.
+  // Rendering them anyway printed "sender reported no pane — no human named",
+  // which reads as a suspicious stranger rather than as the mailbox itself.
+  if (m.system) {
+    const head = banner(`agxchat ${m.id} \u2014 notice from agxchat itself, not from a session \u2014 no reply needed`);
+    return m.inline ? [head, subject, quoteForTty(m.body)].filter(Boolean).join(' \u2014 ') : `${head} call mail_inbox`;
+  }
+
   const origin = m.senderObserved
     ? `origin pane ${m.fromPaneId} observed from the connection`
     : m.senderConsistent === true
@@ -952,6 +978,7 @@ async function announceExit(paneId: string) {
   const m: Mail = {
     id: newId(),
     kind: 'note',
+    system: true,
     from: 'agxchat',
     to: gone.by,
     subject: `${gone.name} is gone`,
@@ -1307,6 +1334,7 @@ function buildMcpServer(identity: string | null) {
       const m: Mail = {
         id: newId(),
         kind: kind ?? 'ask',
+        system: false,
         from,
         to: resolved.name,
         subject,
@@ -1431,6 +1459,7 @@ function buildMcpServer(identity: string | null) {
       const reply: Mail = {
         id: newId(),
         kind: 'reply',
+        system: false,
         from,
         to: orig.from,
         subject: replySubject(orig.subject),
@@ -1793,7 +1822,7 @@ app.post('/mail', async (req, res) => {
   }
 
   const m: Mail = {
-    id: newId(), kind, from, to: resolved.name, subject, body,
+    id: newId(), system: false, kind, from, to: resolved.name, subject, body,
     pointers, expect, replyTo: threadId, data: null,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: Boolean(req.body?.inline), notify,
@@ -1845,7 +1874,7 @@ app.post('/reply', async (req, res) => {
   }
 
   const reply: Mail = {
-    id: newId(), kind: 'reply', from: String(from ?? orig.to), to: orig.from,
+    id: newId(), system: false, kind: 'reply', from: String(from ?? orig.to), to: orig.from,
     subject: replySubject(orig.subject), body, pointers, expect: null, replyTo: orig.id, data,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
