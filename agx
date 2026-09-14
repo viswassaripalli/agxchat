@@ -112,6 +112,13 @@ set -- "${ARGS[@]}"
 # server treats an unresolvable sender as "reads via API" and never nudges. So
 # each failure is named, and commands that write refuse rather than guess.
 IDENTITY_PROBLEM=""
+# Commands that manage the server itself never send or receive mail, and
+# `serve` asks the server who we are while it is still starting — which always
+# failed, so every clean start printed a warning about its own server being
+# down. Skip the probe where identity is not used.
+case "${1:-}" in
+  serve|stop|status|chat|update|uninstall|help|--help|-h) FROM="${FROM:-$(basename "$(pwd)")}" ;;
+esac
 if [ -z "$FROM" ]; then
   # Identity is per pane, not per directory: two terminals in one repo are two
   # mailboxes. The server owns that mapping, so ask it about THIS pane.
@@ -181,6 +188,13 @@ case "$CMD" in
     for _ in $(seq 24); do running && break; sleep 0.5; done
     if running; then
       echo "AGxChat up on http://127.0.0.1:$PORT (log: $HOME_DIR/.run/server.log)"
+      # The chat view does not survive its pane being reused or the machine
+      # being restarted, and a mailbox you cannot see is indistinguishable from
+      # one that is not working. Restoring it is idempotent: an already-running
+      # view is left alone. AGX_NO_CHAT=1 for headless use.
+      if [ "${AGX_NO_CHAT:-}" != "1" ] && command -v herdr >/dev/null 2>&1; then
+        "$SELF" chat --space 2>/dev/null || true
+      fi
     else
       echo "failed to start — last lines:" >&2; tail -20 "$HOME_DIR/.run/server.log" >&2; exit 1
     fi
@@ -195,6 +209,40 @@ case "$CMD" in
   chat)
     # --space puts the chat view in its own herdr workspace instead of a split.
     if [ "${1:-}" = "--space" ]; then
+      # Reuse the AGxChat space if it already exists. Creating unconditionally
+      # is what produced two identically named spaces, and a chat view that
+      # does not come back after the server restarts is the same bug seen from
+      # the other side: the pane is still there, the TUI in it is not.
+      EXISTING=$(herdr workspace list 2>/dev/null | python3 -c "
+import json,sys
+try:
+    ws = json.load(sys.stdin)['result']['workspaces']
+except Exception:
+    ws = []
+print(next((w['workspace_id'] for w in ws if w.get('label') == 'AGxChat'), ''))
+" 2>/dev/null || true)
+      if [ -n "$EXISTING" ]; then
+        PANE=$(herdr pane list 2>/dev/null | EXISTING="$EXISTING" python3 -c "
+import json,os,sys
+try:
+    panes = json.load(sys.stdin)['result']['panes']
+except Exception:
+    panes = []
+mine = [p for p in panes if p.get('workspace_id') == os.environ['EXISTING']]
+print(next((p['pane_id'] for p in mine if p.get('label') == 'chat'), mine[0]['pane_id'] if mine else ''))
+" 2>/dev/null || true)
+        if [ -n "$PANE" ]; then
+          if herdr pane process-info --pane "$PANE" 2>/dev/null | grep -q 'mail-tui.tsx'; then
+            echo "chat already running in workspace AGxChat, pane $PANE"
+            exit 0
+          fi
+          herdr pane rename "$PANE" chat >/dev/null 2>&1 || true
+          herdr pane run "$PANE" "cd $HOME_DIR && ./node_modules/.bin/tsx mail-tui.tsx" >/dev/null
+          echo "chat restarted in workspace AGxChat, pane $PANE"
+          exit 0
+        fi
+      fi
+
       # herdr returns the new pane as result.root_pane; the other shapes are
       # what `pane split` and `pane move` return, kept as fallbacks.
       CREATED=$(herdr workspace create --cwd "$HOME_DIR" --label "AGxChat" --no-focus)
