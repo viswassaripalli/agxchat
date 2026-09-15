@@ -359,6 +359,35 @@ export async function inferKind(paneId: string): Promise<string | null> {
   return null;
 }
 
+/**
+ * Whether a pane is running the chat view rather than an agent.
+ *
+ * This is the whole basis of approval gating. Every other signal an agent
+ * could produce, an agent could also fake: `--for` is a string it chooses,
+ * and a pane id proves only which terminal a request came from, not who was
+ * at the keyboard. The chat view is the one pane no agent is assigned to, so
+ * "this request came from a pane whose foreground process is mail-tui" is a
+ * property an agent cannot assert about its own pane.
+ *
+ * It is not proof of a human. An agent that can drive herdr can still type
+ * into that pane. It narrows the forgery to one specific pane and one
+ * specific keystroke, which is a great deal narrower than any string in a
+ * request body.
+ */
+export async function paneRunsChatView(paneId: string): Promise<boolean> {
+  try {
+    const { stdout } = await exec(HERDR, ['pane', 'process-info', '--pane', paneId], {
+      maxBuffer: 4 * 1024 * 1024,
+    });
+    const info = (JSON.parse(stdout)?.result ?? {}).process_info ?? {};
+    return (info.foreground_processes ?? []).some((proc: any) =>
+      typeof proc?.cmdline === 'string' && proc.cmdline.includes('mail-tui.tsx'),
+    );
+  } catch {
+    return false; // cannot tell is not the same as yes
+  }
+}
+
 export async function herdrVersion(): Promise<string> {
   const { stdout } = await exec(HERDR, ['--version']);
   return stdout.trim();

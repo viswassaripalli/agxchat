@@ -54,6 +54,8 @@ type Mail = {
   delivery: string;
   deliveryDetail: string | null;
   requestedBy?: string | null;
+  approvedAt?: number | null;
+  approvedFromPane?: string | null;
 };
 
 type Thread = {
@@ -227,6 +229,7 @@ function Message({ m, maxLines, width }: { m: Mail; maxLines: number; width: num
         </Text>
         {badge && <Text color={badge}> {m.delivery}</Text>}
         {m.requestedBy && <Text color="magenta"> for {m.requestedBy}</Text>}
+        {m.approvedAt ? <Text color="green"> ✓ approved</Text> : null}
       </Text>
       <Text>{text}</Text>
       {hidden > 0 && <Text dimColor>… +{hidden} lines · c for full bodies</Text>}
@@ -398,6 +401,36 @@ function App() {
    * key is pressed, and reports network failure as what it is — "fetch failed"
    * told nobody that the server was simply not there.
    */
+  /**
+   * Approve the request a thread is waiting on.
+   *
+   * Pressing this here is what makes it mean anything: the server accepts
+   * approval only from the pane running this view, so the same POST from an
+   * agent's pane is refused. A session that was right to distrust a relayed
+   * "he approved it" can act on this one.
+   */
+  const approveThread = async (t: Thread) => {
+    // Pressing it again withdraws: approving the wrong thread is one keystroke
+    // away, so taking it back must be one keystroke too.
+    const approved = t.messages.find((m) => m.approvedAt);
+    const target = approved ?? t.messages.find((m) => m.requestedBy) ?? t.root;
+    try {
+      const r = await fetch(`${BASE}/approve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', ...AUTH },
+        body: JSON.stringify({ mail_id: target.id, revoke: Boolean(approved) }),
+      });
+      const j: any = await r.json().catch(() => ({}));
+      setNote(
+        r.ok
+          ? `${approved ? 'withdrew approval on' : 'approved'} ${target.id} \u2014 ${j.told} told`
+          : `approve failed: ${j.error ?? r.status}`,
+      );
+    } catch {
+      setNote(`approve failed: the server is not answering on ${BASE}`);
+    }
+  };
+
   const removeThread = async (t: Thread) => {
     const attempt = async () =>
       fetch(`${BASE}/thread/${encodeURIComponent(t.root.id)}`, { method: 'DELETE', headers: AUTH });
@@ -465,6 +498,7 @@ function App() {
     }
 
     if (input === 'q' || (key.ctrl && input === 'c')) return exit();
+    if (input === 'a' && selected) return void approveThread(selected);
     if (input === 'j' || key.downArrow) {
       setFollow(false);
       return setCursor((c) => Math.min(c + 1, Math.max(visible.length - 1, 0)));
@@ -622,7 +656,7 @@ function App() {
 
       <Text dimColor>
         {mode === 'browse'
-          ? 'j/k move · o order · f filter · c bodies · p pair · i write · d delete · e unblock · G follow · q quit'
+          ? 'j/k move · a approve · o order · f filter · c bodies · p pair · i write · d delete · e unblock · G follow · q quit'
           : 'typing…'}
       </Text>
     </Box>
