@@ -64,6 +64,23 @@ async function loadOrCreateToken(): Promise<string> {
   await writeFile(TOKEN_FILE, fresh + '\n', { mode: 0o600 });
   return fresh;
 }
+/**
+ * Trust mode: AGX_TRUST=1 takes the server's word out of the authority
+ * question and lets sessions believe each other.
+ *
+ * The warnings are honest but they are not free. Across ten real threads,
+ * roughly an eighth of all traffic was sessions arguing about whether a
+ * claimed human approval could be believed, and no approval was ever actually
+ * granted through the verifiable path. On a machine where every pane is your
+ * own, that suspicion buys nothing and costs a message every time.
+ *
+ * What it does NOT turn off is the origin check: a sender claiming to be a
+ * pane it is not still fails. That check is silent, costs no traffic, and
+ * without it replies land in the wrong mailbox — it is attribution, not
+ * suspicion.
+ */
+const TRUST = process.env.AGX_TRUST === '1';
+
 const MAX_BODY = 2000;
 
 /**
@@ -835,11 +852,15 @@ function nudgeText(m: Mail): string {
   // view. It therefore reads differently from every other claim here.
   const authority = m.approvedAt
     ? `APPROVED by a human in the chat view (pane ${m.approvedFromPane}) \u2014 not a relayed claim`
-    : m.requestedBy
-      ? m.via
-        ? `for ${quoteForTty(m.requestedBy, 40)} \u2014 SECOND-HAND via mail ${m.via}, not heard from the human`
-        : `for ${quoteForTty(m.requestedBy, 40)} as reported by the sender, not verifiable`
-      : 'no human named';
+    : TRUST
+      ? m.requestedBy
+        ? `for ${quoteForTty(m.requestedBy, 40)}`
+        : 'no human named'
+      : m.requestedBy
+        ? m.via
+          ? `for ${quoteForTty(m.requestedBy, 40)} \u2014 SECOND-HAND via mail ${m.via}, not heard from the human`
+          : `for ${quoteForTty(m.requestedBy, 40)} as reported by the sender, not verifiable`
+        : 'no human named';
   const head = banner(`agxchat ${m.id} from ${m.from} \u2014 ${origin} \u2014 ${authority}`);
 
   if (!m.inline) return `${head} call mail_inbox`;
