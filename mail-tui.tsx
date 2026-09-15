@@ -268,11 +268,25 @@ function App() {
   const [mode, setMode] = useState<'browse' | 'to' | 'subject' | 'body'>('browse');
   const [confirmDelete, setConfirmDelete] = useState<Thread | null>(null);
   const [draft, setDraft] = useState({ to: '', subject: '', body: '' });
+  /**
+   * How far the conversation pane is scrolled from the bottom, in lines.
+   *
+   * Zero means the newest message is on screen, which is where a chat should
+   * open. Without this the pane simply grew: a long thread rendered taller
+   * than the terminal and pushed the thread list off the top of the screen, so
+   * the fix for reading a long conversation was also what hid every other one.
+   */
+  const [detailUp, setDetailUp] = useState(0);
   const [tick, setTick] = useState(0);
 
   // Ages are relative, so the list must repaint even when nothing arrives — but
   // once every five seconds is enough for a column that reads "6m", and every
   // tick used to rebuild the entire thread tree below.
+  // Changing thread returns to the newest message: carrying one thread's
+  // scroll position into another shows you the middle of a conversation you
+  // have not read.
+  useEffect(() => setDetailUp(0), [cursor]);
+
   useEffect(() => {
     const t = setInterval(() => setTick((v) => v + 1), 5000);
     return () => clearInterval(t);
@@ -497,8 +511,13 @@ function App() {
       return;
     }
 
+    // Mouse reports arrive on the same stdin as keys; without this a click's
+    // bytes read as keystrokes and fire whatever they happen to spell.
+    if (input.includes('\u001b[<') || /^\[<\d+;/.test(input)) return;
     if (input === 'q' || (key.ctrl && input === 'c')) return exit();
     if (input === 'a' && selected) return void approveThread(selected);
+    if (input === '[') return setDetailUp((v) => v + 5);
+    if (input === ']') return setDetailUp((v) => Math.max(0, v - 5));
     if (input === 'j' || key.downArrow) {
       setFollow(false);
       return setCursor((c) => Math.min(c + 1, Math.max(visible.length - 1, 0)));
@@ -540,9 +559,52 @@ function App() {
   });
 
   const maxLines = fullBodies ? 60 : 6;
+
+
   const listRows = Math.max(4, rows - 8);
   const listStart = Math.max(0, Math.min(cursor - Math.floor(listRows / 6), Math.max(0, visible.length - Math.floor(listRows / 3))));
   const listSlice = visible.slice(listStart, listStart + Math.floor(listRows / 3));
+
+  /**
+   * The conversation as a flat list of screen lines, windowed to what fits.
+   *
+   * Rendering whole messages and letting the column grow is what pushed the
+   * thread list off the screen on a long thread. Lines are built here so the
+   * pane can be a fixed height and still scroll exactly, and so the window
+   * sits at the END by default: a chat opens on its newest message, not its
+   * oldest.
+   */
+  const detailLines: React.ReactNode[] = [];
+  if (selected) {
+    for (const m of selected.messages) {
+      const { text, hidden } = clip(m.body, maxLines, Math.max(24, detailWidth - 2));
+      const badge = NOTABLE[m.delivery];
+      detailLines.push(
+        <Text key={`${m.id}-h`} wrap="truncate">
+          <Text bold color={m.from.toLowerCase() === ME ? 'cyan' : 'yellow'}>{m.from}</Text>
+          <Text dimColor> → {m.to} </Text>
+          <Text dimColor>{clock(m.createdAt)} {m.id}</Text>
+          {badge && <Text color={badge}> {m.delivery}</Text>}
+          {m.requestedBy && <Text color="magenta"> for {m.requestedBy}</Text>}
+          {m.approvedAt ? <Text color="green"> ✓ approved</Text> : null}
+        </Text>,
+      );
+      text.split('\n').forEach((line, i) => detailLines.push(<Text key={`${m.id}-b${i}`}>{line}</Text>));
+      if (hidden > 0)
+        detailLines.push(<Text key={`${m.id}-x`} dimColor>… +{hidden} lines · c for full bodies</Text>);
+      if (m.pointers.length > 0)
+        detailLines.push(<Text key={`${m.id}-p`} color="blue" wrap="truncate">↳ {m.pointers.join(', ')}</Text>);
+      if (m.deliveryDetail && ATTENTION.has(m.delivery))
+        detailLines.push(<Text key={`${m.id}-w`} color="red" wrap="truncate">⚠ {m.deliveryDetail}</Text>);
+      detailLines.push(<Text key={`${m.id}-s`}> </Text>);
+    }
+  }
+  // 3 rows of the column are the subject, the summary and the blank under it.
+  const detailRows = Math.max(3, listRows - 3);
+  const maxUp = Math.max(0, detailLines.length - detailRows);
+  const up = Math.min(detailUp, maxUp);
+  const end = detailLines.length - up;
+  const detailWindow = detailLines.slice(Math.max(0, end - detailRows), end);
 
   return (
     <Box flexDirection="column" paddingX={1}>
@@ -578,7 +640,7 @@ function App() {
       </Box>
 
       <Box marginTop={1}>
-        <Box flexDirection="column" width={listWidth} flexShrink={0} borderStyle="round" borderColor="gray">
+        <Box flexDirection="column" width={listWidth} flexShrink={0} height={listRows} overflow="hidden" borderStyle="round" borderColor="gray">
           {listSlice.map((t, i) => (
             <ThreadRow
               key={t.root.id}
@@ -593,22 +655,19 @@ function App() {
           )}
         </Box>
 
-        <Box flexDirection="column" flexGrow={1} paddingX={2}>
+        <Box flexDirection="column" flexGrow={1} paddingX={2} height={listRows} overflow="hidden">
           {selected ? (
             <>
-              <Text bold>{selected.subject}</Text>
-              <Text dimColor>
+              <Text bold wrap="truncate">{selected.subject}</Text>
+              <Text dimColor wrap="truncate">
                 {selected.messages.length} message{selected.messages.length === 1 ? '' : 's'}
                 {selected.answeredIn !== null
                   ? ` · answered in ${age(selected.answeredIn)}`
                   : ' · awaiting reply'}
                 {selected.reason ? ` · ${selected.reason}` : ''}
+                {detailUp > 0 ? ` · ${detailUp} lines below` : ''}
               </Text>
-              <Box marginTop={1} flexDirection="column">
-                {selected.messages.map((m) => (
-                  <Message key={m.id} m={m} maxLines={maxLines} width={detailWidth} />
-                ))}
-              </Box>
+              <Box marginTop={1} flexDirection="column">{detailWindow}</Box>
             </>
           ) : (
             <Text dimColor>nothing selected</Text>
@@ -656,7 +715,7 @@ function App() {
 
       <Text dimColor>
         {mode === 'browse'
-          ? 'j/k move · a approve · o order · f filter · c bodies · p pair · i write · d delete · e unblock · G follow · q quit'
+          ? 'j/k move · [ ] scroll · a approve · o order · f filter · c bodies · p pair · i write · d delete · e unblock · G follow · q quit'
           : 'typing…'}
       </Text>
     </Box>
