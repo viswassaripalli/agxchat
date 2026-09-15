@@ -20,6 +20,7 @@ import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/
 import {
   listAgents,
   listPlainPanes,
+  paneRunsChatView,
   inferKind,
   nudge,
   sendKeys,
@@ -95,6 +96,18 @@ type Mail = {
   inline: boolean;
   /** false when the recipient reads via the TUI/API and wants no TTY writes. */
   notify: boolean;
+  /**
+   * When a human approved this from the chat view, and from which pane.
+   *
+   * `requestedBy` is a claim the sender types; this is the one authority
+   * signal the sender cannot produce, because the server refuses to set it
+   * unless the request arrives from a pane running the chat view. A receiving
+   * agent can therefore treat it differently from "a bot told me a human said
+   * so", which is the distinction that was missing.
+   */
+  approvedAt: number | null;
+  approvedFromPane: string | null;
+
   /**
    * Written by the server itself rather than by any session — an exit notice,
    * a runaway pause. These are the only messages whose sender is not a guess,
@@ -410,6 +423,8 @@ async function announcePause(from: string, to: string, detail: string, anchor: s
     nudgedAt: null,
     engagedAt: null,
     confirmedAt: null,
+    approvedAt: null,
+    approvedFromPane: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -776,11 +791,16 @@ function nudgeText(m: Mail): string {
       : m.senderConsistent === false
         ? 'sender name overridden, inconsistent with its pane'
         : 'sender reported no pane';
-  const authority = m.requestedBy
-    ? m.via
-      ? `for ${quoteForTty(m.requestedBy, 40)} \u2014 SECOND-HAND via mail ${m.via}, not heard from the human`
-      : `for ${quoteForTty(m.requestedBy, 40)} as reported by the sender, not verifiable`
-    : 'no human named';
+  // Approval is the only authority clause the sender could not have written:
+  // the server sets it, and only for a request that arrived from the chat
+  // view. It therefore reads differently from every other claim here.
+  const authority = m.approvedAt
+    ? `APPROVED by a human in the chat view (pane ${m.approvedFromPane}) \u2014 not a relayed claim`
+    : m.requestedBy
+      ? m.via
+        ? `for ${quoteForTty(m.requestedBy, 40)} \u2014 SECOND-HAND via mail ${m.via}, not heard from the human`
+        : `for ${quoteForTty(m.requestedBy, 40)} as reported by the sender, not verifiable`
+      : 'no human named';
   const head = banner(`agxchat ${m.id} from ${m.from} \u2014 ${origin} \u2014 ${authority}`);
 
   if (!m.inline) return `${head} call mail_inbox`;
@@ -1010,6 +1030,8 @@ async function announceExit(paneId: string) {
     nudgedAt: null,
     engagedAt: null,
     confirmedAt: null,
+    approvedAt: null,
+    approvedFromPane: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -1364,6 +1386,8 @@ function buildMcpServer(identity: string | null) {
         nudgedAt: null,
         engagedAt: null,
         confirmedAt: null,
+        approvedAt: null,
+        approvedFromPane: null,
       };
       mail.set(m.id, m);
       await persist(m);
@@ -1487,6 +1511,8 @@ function buildMcpServer(identity: string | null) {
         nudgedAt: null,
         engagedAt: null,
         confirmedAt: null,
+        approvedAt: null,
+        approvedFromPane: null,
       };
       mail.set(reply.id, reply);
       await persist(reply);
@@ -1838,7 +1864,7 @@ app.post('/mail', async (req, res) => {
     senderConsistent,
     senderObserved: Boolean(observedPane),
     preferPaneId: null,
-    nudgedAt: null, engagedAt: null, confirmedAt: null,
+    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -1882,7 +1908,7 @@ app.post('/reply', async (req, res) => {
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
     via: orig.via, fromPaneId: null, senderConsistent: null, senderObserved: false, preferPaneId: orig.fromPaneId,
-    nudgedAt: null, engagedAt: null, confirmedAt: null,
+    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null,
   };
   mail.set(reply.id, reply);
   await persist(reply);
@@ -1947,6 +1973,104 @@ app.get('/whoami', async (req, res) => {
 });
 
 /** Let a paused pair talk again: forget their recent exchange and the notice. */
+/**
+ * Human approval, gated on where the request came from.
+ *
+ * The problem this solves, stated as the receiving session stated it: an agent
+ * relaying "he approved it in my pane" is indistinguishable from an agent that
+ * invented the approval, and being true does not make it verifiable. No string
+ * in a request body can fix that, because the sender writes every string.
+ *
+ * What the server can check is the connection: `originPane` derives the pane
+ * from the socket through the OS process tree, and the chat view is a pane no
+ * agent is assigned to. So approval is accepted only from a pane running
+ * mail-tui. An agent asking for its own approval is refused with the reason.
+ */
+app.post('/approve', async (req, res) => {
+  const id = String(req.body?.mail_id ?? req.body?.id ?? '');
+  const m = mail.get(id);
+  if (!m) return res.status(404).json({ error: 'no_such_mail', id });
+
+  // Trace against EVERY pane, not the mailbox targets: the chat view is
+  // deliberately excluded from targets so that delivery never types into it,
+  // and reusing that list here meant the one pane allowed to approve was the
+  // one pane origin tracing could not see.
+  const allPanes = [
+    ...(await mergedAgents()).map((a) => a.paneId),
+    ...(await listPlainPanes().catch(() => [] as HerdrAgent[])).map((p) => p.paneId),
+  ].filter((x): x is string => Boolean(x));
+  const pane = await originPane(req.socket.remotePort, [...new Set(allPanes)]);
+  if (!pane) {
+    return res.status(403).json({
+      error: 'approval_origin_unknown',
+      hint: 'approval is accepted only from the chat view, and this connection could not be traced to a pane.',
+    });
+  }
+  if (!(await paneRunsChatView(pane))) {
+    return res.status(403).json({
+      error: 'approval_not_from_chat_view',
+      observed_pane: pane,
+      hint:
+        `pane ${pane} is not running the chat view. A session cannot approve its own request — that is the whole ` +
+        'point of the gate. Ask the human to press "a" on this thread in the AGxChat space.',
+    });
+  }
+
+  // Approving the wrong thread is a keystroke away, and an approval that
+  // cannot be taken back is worse than one that is hard to give: the receiving
+  // session acts on it. Revoking sends the correction to the same recipient.
+  const revoke = req.body?.revoke === true;
+  m.approvedAt = revoke ? null : Date.now();
+  m.approvedFromPane = revoke ? null : pane;
+  await persist(m);
+  bus.emit({ type: 'mail', mail: m });
+
+  // Tell the waiting session, which is otherwise sitting on a refusal it was
+  // right to make and has no way to learn the answer changed.
+  const note: Mail = {
+    id: newId(),
+    kind: 'note',
+    system: true,
+    from: 'agxchat',
+    to: m.to,
+    subject: revoke ? `approval WITHDRAWN: ${m.subject}` : `approved: ${m.subject}`,
+    body: revoke
+      ? `The human approval on mail ${m.id} has been withdrawn from the chat view (pane ${pane}). If you have not ` +
+        'yet acted on it, do not. If you have, say so and stop there — do not try to undo anything on your own.'
+      : `A human approved mail ${m.id} from the chat view (pane ${pane}). This is not a relayed claim: the server ` +
+        'accepted it only because it arrived from the chat view, which no agent is assigned to. You may proceed with ' +
+        'what that mail asked for.',
+    pointers: [],
+    expect: null,
+    replyTo: m.id,
+    data: null,
+    createdAt: Date.now(),
+    readAt: null,
+    delivery: 'queued',
+    deliveryDetail: null,
+    targetPaneId: null,
+    inline: true,
+    notify: true,
+    requestedBy: null,
+    via: null,
+    fromPaneId: null,
+    senderConsistent: null,
+    senderObserved: false,
+    preferPaneId: m.targetPaneId,
+    nudgedAt: null,
+    engagedAt: null,
+    confirmedAt: null,
+    approvedAt: null,
+    approvedFromPane: null,
+  };
+  mail.set(note.id, note);
+  await persist(note);
+  bus.emit({ type: 'mail', mail: note });
+  void deliver(note).then(() => persist(note));
+
+  res.json({ ok: true, id: m.id, approved_at: m.approvedAt, revoked: revoke, from_pane: pane, told: m.to });
+});
+
 app.post('/resume', (req, res) => {
   const a = String(req.query.a ?? req.body?.a ?? '');
   const b = String(req.query.b ?? req.body?.b ?? '');
