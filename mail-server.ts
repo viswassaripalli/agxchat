@@ -13,6 +13,7 @@
  */
 import express from 'express';
 import { randomBytes } from 'node:crypto';
+import { resolve } from 'node:path';
 import { readFile, appendFile, writeFile, mkdir, rename } from 'node:fs/promises';
 import { z } from 'zod';
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
@@ -64,6 +65,31 @@ async function loadOrCreateToken(): Promise<string> {
   return fresh;
 }
 const MAX_BODY = 2000;
+
+/**
+ * Oversized bodies are spilled to a file rather than refused.
+ *
+ * Rejecting cost more than it saved: a session sent a long mail, the send was
+ * refused, and what the receiver actually got was a TRUNCATED earlier attempt
+ * — so the two argued for three round trips about a point that had been cut
+ * off mid-sentence. The pointer mechanism for large payloads already existed;
+ * nothing was using it on the sender's behalf.
+ *
+ * The head of the message stays inline so the thread still reads, and the
+ * whole thing is on disk at a path the receiver can open.
+ */
+async function spillBody(id: string, body: string): Promise<{ body: string; pointer: string | null }> {
+  if (body.length <= MAX_BODY) return { body, pointer: null };
+  const dir = resolve('.run/spill');
+  await mkdir(dir, { recursive: true });
+  const file = resolve(dir, `${id}.txt`);
+  await writeFile(file, body, 'utf8');
+  const head = body.slice(0, MAX_BODY - 200).trimEnd();
+  return {
+    body: `${head}\n\n[… ${body.length - head.length} more characters. The full message is the file below; read it rather than replying to this fragment.]`,
+    pointer: file,
+  };
+}
 const MAX_WAIT_MS = 5 * 60 * 1000;
 
 // ─────────────────────────────── state ───────────────────────────────
@@ -107,6 +133,17 @@ type Mail = {
    */
   approvedAt: number | null;
   approvedFromPane: string | null;
+  /**
+   * When a session said it is blocked waiting for human approval, and why.
+   *
+   * The gate is worthless if nobody notices it: a session asks, then sits,
+   * and the request is only visible to whoever happens to scroll that thread.
+   * Setting this puts the thread in a queue the chat view counts and `agx
+   * pending` lists, so waiting is something the human can see rather than
+   * something they must discover.
+   */
+  approvalRequestedAt: number | null;
+  approvalReason: string | null;
 
   /**
    * Written by the server itself rather than by any session — an exit notice,
@@ -425,6 +462,8 @@ async function announcePause(from: string, to: string, detail: string, anchor: s
     confirmedAt: null,
     approvedAt: null,
     approvedFromPane: null,
+    approvalRequestedAt: null,
+    approvalReason: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -1032,6 +1071,8 @@ async function announceExit(paneId: string) {
     confirmedAt: null,
     approvedAt: null,
     approvedFromPane: null,
+    approvalRequestedAt: null,
+    approvalReason: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -1336,13 +1377,6 @@ function buildMcpServer(identity: string | null) {
       if (subject.length > MAX_SUBJECT * 2) {
         return fail('subject_too_long', { length: subject.length, max: MAX_SUBJECT * 2 });
       }
-      if (body.length > MAX_BODY) {
-        return fail('body_too_large', {
-          length: body.length,
-          max: MAX_BODY,
-          hint: 'Payload by pointer: write the content to a file and pass its absolute path in `pointers`.',
-        });
-      }
 
       const agents = await listTargets();
       const resolved = await resolveTarget(to, agents);
@@ -1356,15 +1390,17 @@ function buildMcpServer(identity: string | null) {
         return fail('runaway_guard', { detail: runaway });
       }
 
+      const sendId = newId();
+      const spilled = await spillBody(sendId, body);
       const m: Mail = {
-        id: newId(),
+        id: sendId,
         kind: kind ?? 'ask',
         system: false,
         from,
         to: resolved.name,
         subject,
-        body,
-        pointers: pointers ?? [],
+        body: spilled.body,
+        pointers: spilled.pointer ? [...(pointers ?? []), spilled.pointer] : (pointers ?? []),
         expect: expect ?? null,
         // A continuation hangs off the named mail, so the exchange stays one
         // thread while remaining an ask rather than a reply.
@@ -1388,6 +1424,8 @@ function buildMcpServer(identity: string | null) {
         confirmedAt: null,
         approvedAt: null,
         approvedFromPane: null,
+        approvalRequestedAt: null,
+        approvalReason: null,
       };
       mail.set(m.id, m);
       await persist(m);
@@ -1471,9 +1509,6 @@ function buildMcpServer(identity: string | null) {
       if (subject.length > MAX_SUBJECT * 2) {
         return fail('subject_too_long', { length: subject.length, max: MAX_SUBJECT * 2 });
       }
-      if (body.length > MAX_BODY) {
-        return fail('body_too_large', { length: body.length, max: MAX_BODY, hint: 'Write the result to a file and pass its path in `pointers`.' });
-      }
       const orig = mail.get(mail_id);
       if (!orig) return fail('unknown_mail', { mail_id });
       if (key(orig.to) !== key(from)) return fail('not_addressed_to_you', { mail_id, addressed_to: orig.to });
@@ -1483,15 +1518,17 @@ function buildMcpServer(identity: string | null) {
         return fail('runaway_guard', { detail: runawayReply });
       }
 
+      const replyId = newId();
+      const spilledReply = await spillBody(replyId, body);
       const reply: Mail = {
-        id: newId(),
+        id: replyId,
         kind: 'reply',
         system: false,
         from,
         to: orig.from,
         subject: replySubject(orig.subject),
-        body,
-        pointers: pointers ?? [],
+        body: spilledReply.body,
+        pointers: spilledReply.pointer ? [...(pointers ?? []), spilledReply.pointer] : (pointers ?? []),
         expect: null,
         replyTo: orig.id,
         data: data ?? null,
@@ -1513,6 +1550,8 @@ function buildMcpServer(identity: string | null) {
         confirmedAt: null,
         approvedAt: null,
         approvedFromPane: null,
+        approvalRequestedAt: null,
+        approvalReason: null,
       };
       mail.set(reply.id, reply);
       await persist(reply);
@@ -1789,7 +1828,6 @@ app.post('/mail', async (req, res) => {
   const senderPane = await resolvePane(registry.get(key(String(from))), String(from));
   const notify = typeof req.body?.notify === 'boolean' ? req.body.notify : Boolean(senderPane?.paneId);
   if (typeof to !== 'string' || !to) return res.status(400).json({ error: 'to is required' });
-  if (typeof body === 'string' && body.length > MAX_BODY) return res.status(413).json({ error: 'body too large; use pointers' });
 
   const agents = await listTargets();
   const resolved = await resolveTarget(to, agents);
@@ -1850,9 +1888,12 @@ app.post('/mail', async (req, res) => {
     }
   }
 
+  const mailId = newId();
+  const spilledMail = await spillBody(mailId, body);
   const m: Mail = {
-    id: newId(), system: false, kind, from, to: resolved.name, subject, body,
-    pointers, expect, replyTo: threadId, data: null,
+    id: mailId, system: false, kind, from, to: resolved.name, subject, body: spilledMail.body,
+    pointers: spilledMail.pointer ? [...pointers, spilledMail.pointer] : pointers,
+    expect, replyTo: threadId, data: null,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: Boolean(req.body?.inline), notify,
     requestedBy: typeof req.body?.requested_by === 'string' && req.body.requested_by.trim()
@@ -1864,7 +1905,7 @@ app.post('/mail', async (req, res) => {
     senderConsistent,
     senderObserved: Boolean(observedPane),
     preferPaneId: null,
-    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null,
+    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null, approvalRequestedAt: null, approvalReason: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -1894,7 +1935,6 @@ app.post('/reply', async (req, res) => {
   const orig = mail.get(String(mail_id));
   if (!orig) return res.status(404).json({ error: 'unknown_mail', mail_id });
   if (typeof body !== 'string' || !body.trim()) return res.status(400).json({ error: 'body is required' });
-  if (body.length > MAX_BODY) return res.status(413).json({ error: 'body too large; use pointers' });
 
   const runawayReply = await runawayReason(String(from ?? orig.to), orig.from, String(mail_id));
   if (runawayReply) {
@@ -1902,13 +1942,17 @@ app.post('/reply', async (req, res) => {
     return res.status(429).json({ error: 'runaway_guard', detail: runawayReply });
   }
 
+  const replyMailId = newId();
+  const spilledHttpReply = await spillBody(replyMailId, body);
   const reply: Mail = {
-    id: newId(), system: false, kind: 'reply', from: String(from ?? orig.to), to: orig.from,
-    subject: replySubject(orig.subject), body, pointers, expect: null, replyTo: orig.id, data,
+    id: replyMailId, system: false, kind: 'reply', from: String(from ?? orig.to), to: orig.from,
+    subject: replySubject(orig.subject), body: spilledHttpReply.body,
+    pointers: spilledHttpReply.pointer ? [...pointers, spilledHttpReply.pointer] : pointers,
+    expect: null, replyTo: orig.id, data,
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
     via: orig.via, fromPaneId: null, senderConsistent: null, senderObserved: false, preferPaneId: orig.fromPaneId,
-    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null,
+    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null, approvalRequestedAt: null, approvalReason: null,
   };
   mail.set(reply.id, reply);
   await persist(reply);
@@ -1986,6 +2030,39 @@ app.get('/whoami', async (req, res) => {
  * agent is assigned to. So approval is accepted only from a pane running
  * mail-tui. An agent asking for its own approval is refused with the reason.
  */
+/**
+ * "I am blocked on a human." Any session may say this about mail it received;
+ * unlike approving, asking costs nothing and needs no gate.
+ */
+app.post('/request-approval', async (req, res) => {
+  const id = String(req.body?.mail_id ?? req.body?.id ?? '');
+  const m = mail.get(id);
+  if (!m) return res.status(404).json({ error: 'no_such_mail', id });
+  if (m.approvedAt) return res.json({ ok: true, already_approved: true, id: m.id });
+  m.approvalRequestedAt = Date.now();
+  m.approvalReason = typeof req.body?.reason === 'string' ? req.body.reason.slice(0, 300) : null;
+  await persist(m);
+  bus.emit({ type: 'mail', mail: m });
+  res.json({ ok: true, id: m.id, waiting_on: 'a human pressing a in the chat view' });
+});
+
+/** Everything blocked on a human right now. */
+app.get('/pending', (_req, res) => {
+  const rows = [...mail.values()]
+    .filter((m) => m.approvalRequestedAt && !m.approvedAt)
+    .sort((a, b) => (a.approvalRequestedAt ?? 0) - (b.approvalRequestedAt ?? 0))
+    .map((m) => ({
+      id: m.id,
+      from: m.from,
+      to: m.to,
+      subject: m.subject,
+      reason: m.approvalReason,
+      waiting_since: m.approvalRequestedAt,
+      waiting_ms: Date.now() - (m.approvalRequestedAt ?? Date.now()),
+    }));
+  res.json({ pending: rows, count: rows.length });
+});
+
 app.post('/approve', async (req, res) => {
   const id = String(req.body?.mail_id ?? req.body?.id ?? '');
   const m = mail.get(id);
@@ -2022,6 +2099,7 @@ app.post('/approve', async (req, res) => {
   const revoke = req.body?.revoke === true;
   m.approvedAt = revoke ? null : Date.now();
   m.approvedFromPane = revoke ? null : pane;
+  m.approvalRequestedAt = null; // answered either way: it is no longer waiting
   await persist(m);
   bus.emit({ type: 'mail', mail: m });
 
@@ -2062,6 +2140,8 @@ app.post('/approve', async (req, res) => {
     confirmedAt: null,
     approvedAt: null,
     approvedFromPane: null,
+    approvalRequestedAt: null,
+    approvalReason: null,
   };
   mail.set(note.id, note);
   await persist(note);

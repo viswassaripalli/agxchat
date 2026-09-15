@@ -638,6 +638,32 @@ except Exception: pass" 2>/dev/null)
     echo
     echo "watch replies with: agx inbox    ·    see them live in the chat view"
     ;;
+  need-approval)
+    # A session saying it is blocked on a human. Costs nothing and needs no
+    # gate: asking is not approving.
+    [ -z "${1:-}" ] && { echo "usage: agx need-approval <mail-id> [reason]" >&2; exit 1; }
+    api /request-approval -X POST -H 'content-type: application/json' \
+      -d "$(python3 -c "
+import json,sys
+print(json.dumps({'mail_id': sys.argv[1], 'reason': sys.argv[2] if len(sys.argv) > 2 else None}))
+" "$1" "${2:-}")" | jq_or_cat
+    ;;
+  pending)
+    api /pending | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+if not d['count']:
+    print('nothing is waiting on you')
+for r in d['pending']:
+    mins = int(r['waiting_ms'] / 60000)
+    print(f\"{r['id']}  {r['from']} -> {r['to']}  waiting {mins}m\")
+    print(f\"      {r['subject']}\")
+    if r['reason']:
+        print(f\"      why: {r['reason']}\")
+print()
+print('approve by pressing a on the thread in the chat view (agx chat --space)')
+"
+    ;;
   spawned)
     # Liveness is checked rather than remembered: a spawned session can exit on
     # its own, and a list that still shows it is worse than no list.
@@ -665,7 +691,53 @@ if rows and not any(r['pane'] in live for r in rows):
 PYEOF
     ;;
   kill)
-    TARGET="${1:?usage: agx kill <name>|--all}"
+    TARGET="${1:?usage: agx kill <name>|--all|--idle <duration>}"
+    # `--idle 30m` closes only sessions that have been silent that long, so a
+    # session still mid-task is never taken down by a sweep. Silence is
+    # measured from its last mail in either direction, not from when it was
+    # started: a worker that answered two minutes ago is busy, however old it
+    # is.
+    if [ "$TARGET" = "--idle" ]; then
+      SPAN="${2:?usage: agx kill --idle <duration>, e.g. 30m, 2h}"
+      TARGET="$(api /mail | SPAN="$SPAN" python3 -c "
+import json, os, pathlib, re, sys, time
+
+span = os.environ['SPAN'].strip()
+m = re.fullmatch(r'(\\d+)([smhd])', span)
+if not m:
+    sys.exit('agx: duration looks like 45s, 30m, 2h or 1d')
+ms = int(m.group(1)) * {'s': 1000, 'm': 60000, 'h': 3600000, 'd': 86400000}[m.group(2)]
+
+try:
+    rows = json.loads(pathlib.Path(os.path.expanduser('~/.agxchat/.run/spawned.json')).read_text())
+except Exception:
+    rows = []
+mail = json.load(sys.stdin)['mail']
+now = time.time() * 1000
+names = []
+for r in rows:
+    name = r['name'].lower()
+    last = max(
+        [m['createdAt'] for m in mail if name in (m['from'].lower(), m['to'].lower())] + [r['at']]
+    )
+    if now - last >= ms:
+        names.append(r['name'])
+print(' '.join(names))
+")"
+      [ -z "$TARGET" ] && { echo "nothing has been idle that long"; exit 0; }
+      echo "idle $SPAN or more: $TARGET"
+      # Closing a session is not undoable — its context is gone — and a sweep
+      # hits several at once, so it lists first and acts only when told twice.
+      # Written after a 1-minute test threshold closed a live session that was
+      # simply between messages.
+      if [ "${3:-}" != "--yes" ]; then
+        echo
+        echo "nothing closed. To actually close these: agx kill --idle $SPAN --yes"
+        exit 0
+      fi
+      for name in $TARGET; do "$SELF" kill "$name"; done
+      exit 0
+    fi
     python3 - "$HOME_DIR/.run/spawned.json" "$TARGET" <<'PYEOF' | while read -r line; do
 import json, sys, pathlib
 path, target = sys.argv[1:3]

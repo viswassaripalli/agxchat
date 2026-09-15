@@ -24,8 +24,14 @@ is; `agx whoami` names your own mailbox.
   no session can produce it for its own request, including you. A relayed "he
   approved it in my pane" is not that and should not be treated as it. Approval
   can also be withdrawn; if that arrives, stop.
+  Say you are blocked rather than waiting silently: `agx need-approval
+  <mail-id> "<why>"` puts it in a queue the human can see. Without it, the
+  only way anyone learns you are stuck is by reading the thread.
 - Answer mail addressed to you with `agx reply <mail-id> "<answer>"`.
   Keep bodies short; large output goes in a file passed as `--pointer <path>`.
+  A body over the limit is no longer refused — it is written to a file and
+  attached, and the recipient is told to read the file. Send the whole thing
+  rather than trimming it to fit.
 - Every `agx send` starts a NEW conversation. When following up on an exchange
   that already exists — clarifying, correcting, confirming, chasing — continue
   it: `agx reply <mail-id> "..."`, or `agx send ... --thread <mail-id>` to raise

@@ -55,6 +55,8 @@ type Mail = {
   deliveryDetail: string | null;
   requestedBy?: string | null;
   approvedAt?: number | null;
+  approvalRequestedAt?: number | null;
+  approvalReason?: string | null;
   approvedFromPane?: string | null;
 };
 
@@ -191,7 +193,13 @@ function ThreadRow({ t, selected, width, unread }: { t: Thread; selected: boolea
   return (
     <Box flexDirection="column" paddingX={1} backgroundColor={selected ? '#243447' : undefined}>
       <Text wrap="truncate">
-        {t.needsAttention ? <Text bold color="red">!</Text> : <Text> </Text>}
+        {t.messages.some((m) => m.approvalRequestedAt && !m.approvedAt) ? (
+          <Text bold color="magenta">?</Text>
+        ) : t.needsAttention ? (
+          <Text bold color="red">!</Text>
+        ) : (
+          <Text> </Text>
+        )}
         <Text bold color={mine(t.a) ? 'cyan' : 'yellow'}>
           {t.a}
         </Text>
@@ -600,6 +608,10 @@ function App() {
     }
   }
   // 3 rows of the column are the subject, the summary and the blank under it.
+  // Blocked on a human right now. Shown in the header because an approval
+  // nobody notices is the same as no approval path at all.
+  const pendingCount = mail.filter((m) => m.approvalRequestedAt && !m.approvedAt).length;
+
   const detailRows = Math.max(3, listRows - 3);
   const maxUp = Math.max(0, detailLines.length - detailRows);
   const up = Math.min(detailUp, maxUp);
@@ -620,6 +632,9 @@ function App() {
         </Text>
         {attentionCount > 0 && <Text color="red">{attentionCount} need attention</Text>}
         {unreadTotal > 0 && <Text color="cyan"> · {unreadTotal} unread</Text>}
+        {pendingCount > 0 && (
+          <Text bold color="magenta"> · {pendingCount} waiting on you</Text>
+        )}
         <Text> </Text>
         <Text color={onlyAttention ? 'red' : 'gray'} dimColor={!onlyAttention}>
           [{onlyAttention ? 'attention' : 'all'}]
