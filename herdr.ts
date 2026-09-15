@@ -374,6 +374,36 @@ export async function inferKind(paneId: string): Promise<string | null> {
  * specific keystroke, which is a great deal narrower than any string in a
  * request body.
  */
+/**
+ * Text a human has typed but not sent, if any.
+ *
+ * Delivery types into the pane's TTY and presses Enter. If someone is midway
+ * through writing a prompt when mail lands, their half-written sentence is
+ * what gets submitted — reported happening repeatedly, and it destroys work
+ * that was never sent. Nothing about agent status says "a person is typing
+ * right now": the session reads idle, because it is.
+ *
+ * The input line is the tell. Empty, it is the prompt marker alone; with a
+ * draft, the marker is followed by the text. Read conservatively — if there is
+ * any content on that line, the mail waits.
+ */
+export async function unsentDraft(paneId: string): Promise<string | null> {
+  try {
+    const screen = await readPane(paneId, 14);
+    const lines = screen.split('\n').map((l) => l.replace(/\s+$/, ''));
+    for (let i = lines.length - 1; i >= 0; i--) {
+      const m = /^\s*[❯>›»\u276f]\s*(.*)$/.exec(lines[i]);
+      if (!m) continue;
+      const draft = m[1].trim();
+      // The cursor block on an empty prompt is not a draft.
+      return draft && !/^[\u2588\u2590▏▎▍▌▋▊▉|]$/.test(draft) ? draft : null;
+    }
+  } catch {
+    /* cannot read the pane: say nothing rather than guess */
+  }
+  return null;
+}
+
 export async function paneRunsChatView(paneId: string): Promise<boolean> {
   try {
     const { stdout } = await exec(HERDR, ['pane', 'process-info', '--pane', paneId], {

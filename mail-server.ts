@@ -22,6 +22,7 @@ import {
   listAgents,
   listPlainPanes,
   paneRunsChatView,
+  unsentDraft,
   inferKind,
   nudge,
   sendKeys,
@@ -888,6 +889,18 @@ async function nudgeNow(m: Mail, paneId: string, status: string) {
     // while its trust dialog is up, and that dialog's default option is
     // "No, exit" — so a delivery, or the retry that fires on an idle
     // transition, answers it and takes the session and its pane down.
+    // A person mid-sentence is not a blocker herdr knows about — the session
+    // reads idle because it is idle; the human is the one who is busy. Typing
+    // here would append to their draft and the Enter would send it.
+    const draft = await unsentDraft(paneId);
+    if (draft) {
+      m.delivery = 'deferred';
+      m.deliveryDetail =
+        `someone is typing in pane ${paneId} ("${draft.slice(0, 40)}${draft.length > 40 ? '…' : ''}"); ` +
+        'holding this until they send it, rather than submitting their half-written prompt';
+      return;
+    }
+
     const onScreen = await explainAgent(paneId);
     if (onScreen?.visibleBlocker) {
       m.delivery = 'target_blocked';
