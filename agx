@@ -638,6 +638,33 @@ except Exception: pass" 2>/dev/null)
     echo
     echo "watch replies with: agx inbox    ·    see them live in the chat view"
     ;;
+  settle)
+    # Close a thread with what it concluded. The outcome is required: "done"
+    # tells the other session nothing it had not already assumed.
+    [ -z "${1:-}" ] && { echo "usage: agx settle <mail-id> \"<what it concluded>\"" >&2; exit 1; }
+    [ -z "${2:-}" ] && { echo "agx: say in one line what it concluded" >&2; exit 1; }
+    api /settle -X POST -H 'content-type: application/json' \
+      -d "$(python3 -c "
+import json,sys
+print(json.dumps({'mail_id': sys.argv[1], 'outcome': sys.argv[2], 'by': sys.argv[3]}))
+" "$1" "$2" "$FROM")" | jq_or_cat
+    ;;
+  open-threads)
+    api /open-threads | python3 -c "
+import json, sys
+d = json.load(sys.stdin)
+if not d['count']:
+    print('nothing open')
+for r in d['open']:
+    mins = int(r['silent_ms'] / 60000)
+    age = f'{mins}m' if mins < 90 else f'{mins // 60}h'
+    flag = ' [needs approval]' if r['approval_pending'] else ''
+    print(f\"{r['thread']}  silent {age:>5}  {r['messages']:2} msgs  waiting on {r['waiting_on']}{flag}\")
+    print(f\"      {r['subject']}\")
+print()
+print('close one with: agx settle <id> \"what it concluded\"')
+"
+    ;;
   need-approval)
     # A session saying it is blocked on a human. Costs nothing and needs no
     # gate: asking is not approving.
