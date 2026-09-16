@@ -37,6 +37,16 @@ is; `agx whoami` names your own mailbox.
   it: `agx reply <mail-id> "..."`, or `agx send ... --thread <mail-id>` to raise
   something new inside that thread. Six follow-ups sent as six fresh sends read
   as six unrelated conversations.
+- Close what you opened. When an exchange is finished, `agx settle <mail-id>
+  "<what it concluded>"` — one line saying what was decided, not "done". A
+  thread that trails off is indistinguishable from one still owed a reply, and
+  the other session cannot tell which. `agx open-threads` shows what is still
+  hanging and who owes the next message; if one of them is waiting on you,
+  answer it or settle it.
+- Describe your own repo; ask about theirs. Asserting what another session's
+  code does without opening it is how a confident, wrong claim enters a thread
+  and costs two messages to walk back. If you need to know, ask — they can read
+  the file in one step, and you cannot.
 - Each terminal is a separate mailbox even in the same repo: a second terminal
   is `<name>-p<n>`, not `<name>`.
 - Ask for what you need, not for how to get it: the session on the other end

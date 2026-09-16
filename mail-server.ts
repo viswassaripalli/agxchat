@@ -164,6 +164,20 @@ type Mail = {
   approvalReason: string | null;
 
   /**
+   * Set on a thread's ROOT when someone says the exchange is finished, and
+   * what it concluded.
+   *
+   * Nothing marked the end of a conversation, so threads simply trailed off
+   * and "is this still going?" could only be answered by reading them. Fewer
+   * than half were finished by any reading, and neither side could tell which
+   * ones were waiting on them. An ending that is recorded is also one the
+   * other session can see.
+   */
+  settledAt: number | null;
+  settledBy: string | null;
+  settledOutcome: string | null;
+
+  /**
    * Written by the server itself rather than by any session — an exit notice,
    * a runaway pause. These are the only messages whose sender is not a guess,
    * so they are the only ones allowed to say so in the banner. The flag is set
@@ -482,6 +496,9 @@ async function announcePause(from: string, to: string, detail: string, anchor: s
     approvedFromPane: null,
     approvalRequestedAt: null,
     approvalReason: null,
+    settledAt: null,
+    settledBy: null,
+    settledOutcome: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -490,18 +507,20 @@ async function announcePause(from: string, to: string, detail: string, anchor: s
   await persist(m);
 }
 
+/** The message a thread hangs off, however deep the reply chain. */
+function rootOf(m: Mail): string {
+  let cur = m;
+  for (let hop = 0; hop < 30 && cur.replyTo; hop++) {
+    const parent = mail.get(cur.replyTo);
+    if (!parent) break;
+    cur = parent;
+  }
+  return cur.id;
+}
+
 /** Every message in the thread `id` belongs to, however deep the chain. */
 function threadSize(anyId: string | null): number {
   if (!anyId) return 0;
-  const rootOf = (m: Mail): string => {
-    let cur = m;
-    for (let hop = 0; hop < 30 && cur.replyTo; hop++) {
-      const parent = mail.get(cur.replyTo);
-      if (!parent) break;
-      cur = parent;
-    }
-    return cur.id;
-  };
   const start = mail.get(anyId);
   if (!start) return 0;
   const root = rootOf(start);
@@ -1107,6 +1126,9 @@ async function announceExit(paneId: string) {
     approvedFromPane: null,
     approvalRequestedAt: null,
     approvalReason: null,
+    settledAt: null,
+    settledBy: null,
+    settledOutcome: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -1460,6 +1482,9 @@ function buildMcpServer(identity: string | null) {
         approvedFromPane: null,
         approvalRequestedAt: null,
         approvalReason: null,
+        settledAt: null,
+        settledBy: null,
+        settledOutcome: null,
       };
       mail.set(m.id, m);
       await persist(m);
@@ -1586,6 +1611,9 @@ function buildMcpServer(identity: string | null) {
         approvedFromPane: null,
         approvalRequestedAt: null,
         approvalReason: null,
+        settledAt: null,
+        settledBy: null,
+        settledOutcome: null,
       };
       mail.set(reply.id, reply);
       await persist(reply);
@@ -1939,7 +1967,7 @@ app.post('/mail', async (req, res) => {
     senderConsistent,
     senderObserved: Boolean(observedPane),
     preferPaneId: null,
-    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null, approvalRequestedAt: null, approvalReason: null,
+    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null, approvalRequestedAt: null, approvalReason: null, settledAt: null, settledBy: null, settledOutcome: null,
   };
   mail.set(m.id, m);
   await persist(m);
@@ -1986,7 +2014,7 @@ app.post('/reply', async (req, res) => {
     createdAt: Date.now(), readAt: null, delivery: 'queued', deliveryDetail: null,
     targetPaneId: null, inline: orig.inline, notify: orig.notify, requestedBy: orig.requestedBy,
     via: orig.via, fromPaneId: null, senderConsistent: null, senderObserved: false, preferPaneId: orig.fromPaneId,
-    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null, approvalRequestedAt: null, approvalReason: null,
+    nudgedAt: null, engagedAt: null, confirmedAt: null, approvedAt: null, approvedFromPane: null, approvalRequestedAt: null, approvalReason: null, settledAt: null, settledBy: null, settledOutcome: null,
   };
   mail.set(reply.id, reply);
   await persist(reply);
@@ -2078,6 +2106,75 @@ app.post('/request-approval', async (req, res) => {
   await persist(m);
   bus.emit({ type: 'mail', mail: m });
   res.json({ ok: true, id: m.id, waiting_on: 'a human pressing a in the chat view' });
+});
+
+/**
+ * Close a thread with its outcome.
+ *
+ * Recorded on the root so the whole exchange carries it, and announced to the
+ * other participant: an ending one side knows about is how two sessions end up
+ * disagreeing about whether anything is still owed. Settling again with a new
+ * outcome is allowed — reopening is just saying so.
+ */
+app.post('/settle', async (req, res) => {
+  const id = String(req.body?.mail_id ?? req.body?.id ?? '');
+  const m = mail.get(id);
+  if (!m) return res.status(404).json({ error: 'no_such_mail', id });
+  const root = mail.get(rootOf(m));
+  if (!root) return res.status(404).json({ error: 'no_thread_root', id });
+
+  const outcome = typeof req.body?.outcome === 'string' ? req.body.outcome.trim().slice(0, 300) : '';
+  if (!outcome) {
+    return res.status(400).json({
+      error: 'outcome_required',
+      hint: 'say in one line what it concluded. "done" tells the other session nothing it did not already assume.',
+    });
+  }
+  const by = typeof req.body?.by === 'string' && req.body.by.trim() ? req.body.by.trim() : 'unknown';
+  root.settledAt = Date.now();
+  root.settledBy = by;
+  root.settledOutcome = outcome;
+  await persist(root);
+  bus.emit({ type: 'mail', mail: root });
+
+  const others = new Set(
+    [...mail.values()].filter((x) => rootOf(x) === root.id).flatMap((x) => [x.from, x.to]),
+  );
+  others.delete(by);
+  res.json({ ok: true, thread: root.id, settled_by: by, outcome, participants: [...others] });
+});
+
+/**
+ * Threads nobody has closed, oldest silence first.
+ *
+ * `waiting_on` is the side that spoke last: the other one owes the reply, and
+ * that is the single fact you want when deciding what to chase.
+ */
+app.get('/open-threads', (_req, res) => {
+  const byRoot = new Map<string, Mail[]>();
+  for (const m of mail.values()) {
+    const r = rootOf(m);
+    byRoot.set(r, [...(byRoot.get(r) ?? []), m]);
+  }
+  const rows = [];
+  for (const [rootId, msgs] of byRoot) {
+    const root = mail.get(rootId);
+    if (!root || root.settledAt) continue;
+    msgs.sort((a, b) => a.createdAt - b.createdAt);
+    const last = msgs[msgs.length - 1];
+    rows.push({
+      thread: rootId,
+      subject: root.subject,
+      between: [...new Set(msgs.flatMap((m) => [m.from, m.to]))],
+      messages: msgs.length,
+      last_from: last.from,
+      waiting_on: last.to,
+      silent_ms: Date.now() - last.createdAt,
+      approval_pending: msgs.some((m) => m.approvalRequestedAt && !m.approvedAt),
+    });
+  }
+  rows.sort((a, b) => b.silent_ms - a.silent_ms);
+  res.json({ open: rows, count: rows.length });
 });
 
 /** Everything blocked on a human right now. */
@@ -2176,6 +2273,9 @@ app.post('/approve', async (req, res) => {
     approvedFromPane: null,
     approvalRequestedAt: null,
     approvalReason: null,
+    settledAt: null,
+    settledBy: null,
+    settledOutcome: null,
   };
   mail.set(note.id, note);
   await persist(note);

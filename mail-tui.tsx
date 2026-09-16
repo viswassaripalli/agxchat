@@ -56,6 +56,8 @@ type Mail = {
   requestedBy?: string | null;
   approvedAt?: number | null;
   approvalRequestedAt?: number | null;
+  settledAt?: number | null;
+  settledOutcome?: string | null;
   approvalReason?: string | null;
   approvedFromPane?: string | null;
 };
@@ -193,7 +195,9 @@ function ThreadRow({ t, selected, width, unread }: { t: Thread; selected: boolea
   return (
     <Box flexDirection="column" paddingX={1} backgroundColor={selected ? '#243447' : undefined}>
       <Text wrap="truncate">
-        {t.messages.some((m) => m.approvalRequestedAt && !m.approvedAt) ? (
+        {t.root.settledAt ? (
+          <Text color="green">✓</Text>
+        ) : t.messages.some((m) => m.approvalRequestedAt && !m.approvedAt) ? (
           <Text bold color="magenta">?</Text>
         ) : t.needsAttention ? (
           <Text bold color="red">!</Text>
@@ -611,6 +615,9 @@ function App() {
   // Blocked on a human right now. Shown in the header because an approval
   // nobody notices is the same as no approval path at all.
   const pendingCount = mail.filter((m) => m.approvalRequestedAt && !m.approvedAt).length;
+  // Threads nobody has closed. Shown because an exchange that trails off looks
+  // identical to one that finished, and fewer than half were actually finished.
+  const openCount = threads.filter((t) => !t.root.settledAt).length;
 
   const detailRows = Math.max(3, listRows - 3);
   const maxUp = Math.max(0, detailLines.length - detailRows);
@@ -635,6 +642,7 @@ function App() {
         {pendingCount > 0 && (
           <Text bold color="magenta"> · {pendingCount} waiting on you</Text>
         )}
+        {openCount > 0 && <Text color="yellow"> · {openCount} open</Text>}
         <Text> </Text>
         <Text color={onlyAttention ? 'red' : 'gray'} dimColor={!onlyAttention}>
           [{onlyAttention ? 'attention' : 'all'}]
@@ -680,6 +688,7 @@ function App() {
                   ? ` · answered in ${age(selected.answeredIn)}`
                   : ' · awaiting reply'}
                 {selected.reason ? ` · ${selected.reason}` : ''}
+                {selected.root.settledAt ? ` · settled: ${selected.root.settledOutcome ?? ''}` : ''}
                 {detailUp > 0 ? ` · ${detailUp} lines below` : ''}
               </Text>
               <Box marginTop={1} flexDirection="column">{detailWindow}</Box>
