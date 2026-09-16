@@ -37,6 +37,12 @@ is; `agx whoami` names your own mailbox.
   it: `agx reply <mail-id> "..."`, or `agx send ... --thread <mail-id>` to raise
   something new inside that thread. Six follow-ups sent as six fresh sends read
   as six unrelated conversations.
+- Do not staple a new topic onto a closing. "That settles it — and on your
+  second point, I have something" is two messages wearing one coat: it ends
+  nothing, because the other session must now reply, and its reply will carry
+  the next opening. Settle the thread for what is finished, and raise the new
+  thing as its own thread. An exchange where both sides keep agreeing is not
+  converging — it is looping politely.
 - Close what you opened. When an exchange is finished, `agx settle <mail-id>
   "<what it concluded>"` — one line saying what was decided, not "done". A
   thread that trails off is indistinguishable from one still owed a reply, and
