@@ -1,0 +1,47 @@
+# AGxChat as a herdr plugin.
+#   herdr plugin install viswassaripalli/agxchat
+# Authoring locally instead:
+#   herdr plugin link ~/.agxchat
+id = "agxchat.mail"
+name = "AGxChat"
+version = "0.1.0"
+min_herdr_version = "0.9.0"
+description = "Cross-session mail for coding agents in herdr panes — threads, approval gate, deadlock guards"
+platforms = ["linux", "macos"]
+
+# Origin verification reads lsof and ps; Windows has neither, and delivery
+# would degrade to self-reported provenance rather than fail loudly.
+
+[[build]]
+command = ["npm", "ci"]
+
+# Idempotent: exits immediately if the server is already up. Not a daemon —
+# `agx serve` detaches the server itself and returns.
+[[startup]]
+command = ["bash", "plugin/herdr-launch.sh", "serve"]
+
+[[actions]]
+id = "chat"
+title = "Open AGxChat"
+contexts = ["global"]
+command = ["bash", "plugin/herdr-launch.sh", "open-chat"]
+
+[[actions]]
+id = "serve"
+title = "Start AGxChat server"
+contexts = ["global"]
+command = ["bash", "plugin/herdr-launch.sh", "serve"]
+
+[[actions]]
+id = "status"
+title = "AGxChat server status"
+contexts = ["global"]
+command = ["bash", "plugin/herdr-launch.sh", "status"]
+
+# The chat view is where a human approves a thread, so it is a real tab, not a
+# transient overlay that closes under the keypress.
+[[panes]]
+id = "chat"
+title = "AGxChat"
+placement = "tab"
+command = ["bash", "plugin/herdr-launch.sh", "chat"]

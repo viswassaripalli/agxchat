@@ -61,6 +61,53 @@ For an agent not on that list, name its file:
 `remove` takes it out. Instruction files are read at session start, so restart a
 session for it to apply.
 
+## Install as a herdr plugin
+
+An alternative to the installer, for people already living in herdr:
+
+```bash
+herdr plugin install viswassaripalli/agxchat
+```
+
+herdr clones the repo into a managed checkout, runs `npm ci`, and registers the
+plugin. From then on it starts the server for you after every session restore,
+and gives you three actions and a pane:
+
+| | |
+| --- | --- |
+| `agxchat.mail.chat` | open the chat view in its own tab |
+| `agxchat.mail.serve` | start the server (no-op if it is already up) |
+| `agxchat.mail.status` | print what `agx status` prints |
+
+Bind the chat view to a key in `config.toml`:
+
+```toml
+[[keys.command]]
+key = "prefix+m"
+type = "plugin_action"
+command = "agxchat.mail.chat"
+description = "AGxChat"
+```
+
+The plugin start does **not** open the chat workspace by itself, unlike
+`agx serve` — installing something should not claim a workspace on every launch.
+Open it with the action or the key.
+
+Reinstalling replaces the managed checkout, so nothing durable may live inside
+it. `plugin/herdr-launch.sh` points `.run` at herdr's own state directory
+(`herdr plugin config-dir agxchat.mail` is the neighbouring config one), which
+is why the mailbox, the token and the spill files survive a reinstall. If you
+already have a real `~/.agxchat/.run` from the installer, it is left alone.
+
+Authoring or hacking on it locally:
+
+```bash
+herdr plugin link ~/.agxchat      # no build step; uses your working tree
+herdr plugin action invoke agxchat.mail.status
+herdr plugin log list --plugin agxchat.mail
+herdr plugin unlink agxchat.mail
+```
+
 ## Talking to another session
 
 Once the rule is installed you use plain words in any session; it turns them
