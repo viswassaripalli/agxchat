@@ -273,7 +273,7 @@ const mail = new Map<string, Mail>();
  * diffing. The file is compacted once it passes COMPACT_AT lines.
  */
 const STORE = process.env.AGX_STORE ?? process.env.HERDR_MAIL_STORE ?? '.run/mail.jsonl';
-const COMPACT_AT = 5000;
+const COMPACT_AT = Number(process.env.AGX_COMPACT_AT ?? 5000);
 let storeLines = 0;
 let storeBroken = false;
 

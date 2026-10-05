@@ -227,3 +227,28 @@ the server writes is `.run/`-relative — token, `mail.jsonl`, `spill/`,
 The chat view runs `mail-tui.tsx` directly rather than `agx chat`, which manages
 its own workspace. That matters beyond tidiness: the approval gate only trusts a
 request traced to a pane whose foreground process is that TUI.
+
+## Tests
+
+```bash
+npm test        # unsentDraft, and compaction end to end
+npm run typecheck
+```
+
+Two things are covered, because two things have actually broken.
+
+`unsentDraft` decides whether somebody is mid-sentence in the pane mail is
+about to be typed into, and it has been wrong three times, always the same way:
+something that was not a person typing was read as one, and mail to that pane
+stopped with `nudgedAt: null`. Claude's `Try "..."`, codex's `Ask Codex to do
+anything`, and a completion offered from history, which no pattern can match —
+that one is told apart by the cursor, which sits at column zero for a
+suggestion and at the end of a line somebody typed. The test drives the real
+function against screens written to a file, through `test/stub-herdr`.
+
+Compaction rewrites the append-only store once it passes `AGX_COMPACT_AT`
+lines, and until this test existed it had never run anywhere: the default is
+5000 lines and a working mailbox takes months to reach that. The test sets the
+threshold to 40, sends 30 mail, and checks the mailbox is intact, the file
+shrank, and the oldest message still reads correctly — a compaction that loses
+the first message would otherwise look exactly like one that worked.

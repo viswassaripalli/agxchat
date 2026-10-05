@@ -1,0 +1,27 @@
+#!/usr/bin/env python3
+"""A herdr that answers from a file, so delivery can be tested without a terminal.
+
+`pane read` prints whatever AGX_TEST_SCREEN points at. Everything else answers
+with one idle agent, which is enough for the paths under test.
+"""
+import json, os, sys
+
+argv = sys.argv[1:]
+cmd = " ".join(argv[:2])
+PANE = {"pane_id": "t1:p1", "workspace_id": "t1", "cwd": "/tmp/agxtest",
+        "foreground_cwd": "/tmp/agxtest", "agent": "claude", "agent_status": "idle",
+        "tab_id": "t1:t1", "terminal_id": "term_t1", "focused": False}
+
+if cmd == "pane read":
+    sys.stdout.write(open(os.environ["AGX_TEST_SCREEN"]).read())
+elif cmd == "agent list":
+    print(json.dumps({"id": "t", "result": {"type": "agent_list", "agents": [PANE]}}))
+elif cmd == "pane list":
+    print(json.dumps({"id": "t", "result": {"type": "pane_list", "panes": [PANE]}}))
+elif cmd == "workspace list":
+    print(json.dumps({"id": "t", "result": {"type": "workspace_list", "workspaces": [
+        {"workspace_id": "t1", "label": "agxtest", "agent_status": "idle"}]}}))
+elif argv[:1] == ["agent"]:
+    print("Commands:\n  prompt     Submit a prompt to an agent")
+else:
+    print(json.dumps({"id": "t", "result": {"type": "ok"}}))

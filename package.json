@@ -7,7 +7,8 @@
     "serve": "tsx mail-server.ts",
     "tui": "tsx mail-tui.tsx",
     "chat": "tsx mail-tui.tsx",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "tsx test/draft.test.ts && bash test/compaction.sh"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
