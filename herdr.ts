@@ -259,9 +259,13 @@ export async function listPlainPanes(): Promise<HerdrAgent[]> {
 export async function nudge(paneId: string, text: string): Promise<NudgeResult> {
   // Test affordance: exercise routing and the wait guards without writing into
   // a live agent's TTY.
-  if (process.env.AGX_DRY_NUDGE ?? process.env.HERDR_MAIL_DRY_NUDGE === '1') {
+  // `??` binds looser than `===`, so the old form read as
+  // `AGX_DRY_NUDGE ?? (HERDR_MAIL_DRY_NUDGE === '1')` — setting AGX_DRY_NUDGE
+  // to anything at all, "0" included, silently stopped every real delivery.
+  // It also returned undefined from a Promise<NudgeResult>.
+  if (process.env.AGX_DRY_NUDGE === '1' || process.env.HERDR_MAIL_DRY_NUDGE === '1') {
     console.log(`[dry-nudge] ${paneId} <- ${text}`);
-    return;
+    return { via: 'typed', confirmed: false, detail: 'dry nudge: nothing was typed' };
   }
 
   // Prefer herdr's own delivery where it exists: it owns the terminal, so it

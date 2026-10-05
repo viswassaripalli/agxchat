@@ -6,7 +6,8 @@
   "scripts": {
     "serve": "tsx mail-server.ts",
     "tui": "tsx mail-tui.tsx",
-    "chat": "tsx mail-tui.tsx"
+    "chat": "tsx mail-tui.tsx",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.30.0",
@@ -20,5 +21,8 @@
     "ws": "^8.21.3",
     "zod": "^4.6.1"
   },
-  "description": "Cross-session chat for coding agents running in herdr panes"
+  "description": "Cross-session chat for coding agents running in herdr panes",
+  "devDependencies": {
+    "typescript": "^5.9.3"
+  }
 }

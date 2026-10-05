@@ -28,7 +28,10 @@ const TOKEN = (() => {
     return '';
   }
 })();
-const AUTH = TOKEN ? { 'X-AGX-Token': TOKEN } : {};
+// Typed as a plain string map rather than inferred: the inferred union carries
+// an optional-undefined header key, which fetch's HeadersInit rejects at every
+// call site.
+const AUTH: Record<string, string> = TOKEN ? { 'X-AGX-Token': TOKEN } : {};
 
 type Agent = {
   name: string | null;

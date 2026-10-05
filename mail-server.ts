@@ -767,6 +767,9 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
   const labelled = agents.filter(
     (a) => !isUnidentified(a) && a.workspaceLabel && key(a.workspaceLabel) === t,
   );
+  const listed = (pool: HerdrAgent[]) =>
+    pool.map((a) => ({ name: nameOfPane(a), repo: a.repo, paneId: a.paneId }));
+
   const spaceClash = (paneId: string | null) =>
     labelled.length && !labelled.some((a) => a.paneId === paneId)
       ? {
@@ -778,7 +781,20 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
 
   const seeded = registry.get(t);
   if (seeded) {
-    return { ok: true, name: seeded.name, via: 'name', spaceClash: spaceClash(seeded.paneId) };
+    // Where this seed would actually land, mirroring resolvePane's order.
+    const seat =
+      agents.find((a) => a.paneId === seeded.paneId) ??
+      agents.find(
+        (a) => seeded.cwd && (a.cwd === seeded.cwd || a.foregroundCwd === seeded.cwd),
+      );
+    // The seed is the one address that used to skip the agent check every other
+    // pass applies, and delivery does not refuse on its own — it types the
+    // banner in and notes that herdr did not recognise the pane. In a shell
+    // that banner is executed. Fall through to the agent-less report instead,
+    // which names the pane and can start a session in it.
+    if (!seat || !isUnidentified(seat)) {
+      return { ok: true, name: seeded.name, via: 'name', spaceClash: spaceClash(seeded.paneId) };
+    }
   }
 
   const herdrNamed = agents.filter((a) => a.name && key(a.name) === t);
@@ -802,6 +818,14 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
     const panes = byTopic
       .map((sn) => agents.find((a) => a.paneId === sn.paneId))
       .filter((a): a is HerdrAgent => Boolean(a));
+    // A topic is a human saying "these are related", not "these are
+    // interchangeable". Registering `hevo` on three repos meant a question
+    // about one of them was answered by whichever was free — a real answer
+    // from the wrong project, which reads as authoritative. Same rule the repo
+    // and space passes use: one working tree may pick, several must not.
+    if (new Set(panes.map((a) => a.cwd)).size > 1) {
+      return { ok: false, reason: 'ambiguous', candidates: listed(panes) };
+    }
     const winner = panes.length ? await pickReadiest(panes, agents) : null;
     const chosenName = winner
       ? (byTopic.find((sn) => sn.paneId === winner.paneId)?.name ?? winner.paneId!)
@@ -873,8 +897,6 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
   }
 
   const identified = agents.filter((a) => !isUnidentified(a));
-  const listed = (pool: HerdrAgent[]) =>
-    pool.map((a) => ({ name: nameOfPane(a), repo: a.repo, paneId: a.paneId }));
 
   // Exact repo name. Several panes can carry it two different ways: one
   // checkout open in two panes — same code, same human, so pick — or two
@@ -935,13 +957,16 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
   const known = [...registry.values()].map((s) => s.name);
   if (inactive.length) {
     const first = inactive[0];
-    return {
-      ok: false,
-      reason: 'unknown',
-      known,
-      inactive,
-      hint: `"${to}" is a pane (${first.paneId}) with no agent running in it, so nothing there can read mail. Start one: agx open ${to} --cwd ${first.cwd ?? '<path>'}`,
-    };
+    // One empty pane is unambiguous and can be filled. Several are not: the
+    // extra ones are terminals somebody may be working in, and starting an
+    // agent in the wrong one types `claude` into their prompt.
+    const hint =
+      inactive.length === 1
+        ? `"${to}" is a pane (${first.paneId}) with no agent running in it, so nothing there can read mail. Start one: agx open ${to} --cwd ${first.cwd ?? '<path>'}`
+        : `"${to}" matches ${inactive.length} panes with no agent in them (${inactive
+            .map((i) => i.paneId)
+            .join(', ')}). Any of them could be a terminal in use, so none is started automatically — name the pane you mean.`;
+    return { ok: false, reason: 'unknown', known, inactive, hint };
   }
   return { ok: false, reason: 'unknown', known };
 }
@@ -1340,6 +1365,17 @@ bus.subscribe((ev) => {
  */
 const TRUSTED_BLOCKED = new Set(['claude']);
 
+/**
+ * Whether this pane was asked for by name-of-pane rather than arrived at.
+ *
+ * Only a literal pane id or herdr's own label for the pane counts. Everything
+ * else — a seed, a topic, a repo, a space label — is a name that some pane
+ * happens to satisfy, and satisfying it is not consent to be typed into.
+ */
+function addressedDirectly(m: Mail, pane: HerdrAgent) {
+  return m.to === pane.paneId || (pane.name != null && key(pane.name) === key(m.to));
+}
+
 async function deliver(m: Mail, opts: { silent?: boolean; loose?: boolean } = {}) {
   const agents = await listTargets();
   const session = registry.get(key(m.to));
@@ -1357,6 +1393,13 @@ async function deliver(m: Mail, opts: { silent?: boolean; loose?: boolean } = {}
   } else if (!pane?.paneId) {
     m.delivery = 'undeliverable';
     m.deliveryDetail = 'no live pane for target';
+  } else if (isUnidentified(pane) && !addressedDirectly(m, pane)) {
+    // Unrecognised panes stay reachable — that is the documented behaviour for
+    // agents herdr ships no integration for — but only when somebody addressed
+    // one deliberately. A name that merely resolved onto one is how a mail
+    // banner gets executed as a shell command.
+    m.delivery = 'undeliverable';
+    m.deliveryDetail = `pane ${pane.paneId} runs nothing herdr recognises, so a nudge there would be typed into whatever it is. Address it as ${pane.paneId} if you meant that terminal.`;
   } else if (pane.status === 'blocked' && !TRUSTED_BLOCKED.has(pane.kind ?? '')) {
     // Unknown lifecycle reporting: deliver and let the stall check judge.
     await nudgeNow(m, pane.paneId, pane.status);
@@ -1711,9 +1754,12 @@ function buildMcpServer(identity: string | null) {
     async ({ mail_id, body, pointers, data }) => {
       const from = me();
       if (!from) return noIdentity();
-      if (subject.length > MAX_SUBJECT * 2) {
-        return fail('subject_too_long', { length: subject.length, max: MAX_SUBJECT * 2 });
-      }
+      // No `subject` here: a reply derives its own from the original, via
+      // replySubject(), which strips repeated `re:` and caps the length. The
+      // length guard copied from mail_send referenced a parameter this handler
+      // does not take, so every MCP reply threw a ReferenceError before it
+      // reached the mailbox — found by `npm run typecheck`, not by a user,
+      // because the CLI replies over HTTP and never touched this path.
       const orig = mail.get(mail_id);
       if (!orig) return fail('unknown_mail', { mail_id });
       if (key(orig.to) !== key(from)) return fail('not_addressed_to_you', { mail_id, addressed_to: orig.to });

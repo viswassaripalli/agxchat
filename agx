@@ -364,13 +364,21 @@ except urllib.error.HTTPError as e:
     # it: start a session in that pane's directory and send again. Only ever for
     # a pane that already exists under that name — an unrecognised name is still
     # just unknown, so a typo does not spawn anything.
+    # Exactly one empty pane, or none: several are terminals somebody may be
+    # working in, and the server already refuses to nominate one.
     IDLE_PANE="$(printf '%s' "$OUT" | python3 -c "
 import json,sys
 try: d=json.load(sys.stdin)
 except Exception: raise SystemExit
-if d.get('reason')=='unknown' and d.get('inactive'):
-    print(d['inactive'][0].get('paneId') or '')
+inactive = d.get('inactive') or []
+if d.get('reason')=='unknown' and len(inactive)==1:
+    print(inactive[0].get('paneId') or '')
 " 2>/dev/null || true)"
+
+    if [ -n "$IDLE_PANE" ] && ! command -v herdr >/dev/null 2>&1; then
+      echo "agx: $IDLE_PANE has no agent in it, and herdr is not on PATH to start one" >&2
+      IDLE_PANE=""
+    fi
 
     if [ -n "$IDLE_PANE" ]; then
       echo "agx: no agent is running in $IDLE_PANE — starting one there" >&2

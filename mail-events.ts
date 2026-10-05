@@ -14,6 +14,14 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'node:http';
 import { listAgents, type HerdrAgent } from './herdr.ts';
 
+/**
+ * `Omit` over a union keeps only the keys every member shares, so the emit
+ * signature accepted nothing but `type` — every call site carrying its own
+ * fields was a type error. Distributing it over the union preserves each
+ * variant.
+ */
+type EmittedEvent<T = MailEvent> = T extends unknown ? Omit<T, 'ts'> & { ts?: number } : never;
+
 export type MailEvent =
   | { type: 'snapshot'; ts: number; agents: HerdrAgent[]; mail: unknown[] }
   | { type: 'agent_state'; ts: number; paneId: string; repo: string | null; from: string; to: string }
@@ -25,7 +33,7 @@ export type MailEvent =
   | { type: 'error'; ts: number; message: string };
 
 export type EventBus = {
-  emit(event: Omit<MailEvent, 'ts'> & { ts?: number }): void;
+  emit(event: EmittedEvent): void;
   /** In-process listeners. The server uses this to flush deferred mail on an idle transition. */
   subscribe(handler: (event: MailEvent) => void): () => void;
   attach(
