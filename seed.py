@@ -25,7 +25,7 @@ def git_root(cwd: str) -> Path:
 
 
 def topics_for(name: str, leaf: str) -> list:
-    """Name plus its parts, so "hevo-ui-toolkit" also answers to "toolkit"."""
+    """Name plus its parts, so "web-ui-toolkit" also answers to "toolkit"."""
     out = [name]
     for token in name.replace("_", "-").split("-"):
         if len(token) > 2 and token not in out:

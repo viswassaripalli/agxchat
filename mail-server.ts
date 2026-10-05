@@ -779,14 +779,16 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
         }
       : undefined;
 
+  // Where a registered session would actually land, mirroring resolvePane's
+  // order. Any pass that resolves through the registry has to ask this: the
+  // name is in the seed whether or not anything is running in the pane.
+  const seatOf = (sn: { paneId: string | null; cwd: string | null }) =>
+    agents.find((a) => a.paneId === sn.paneId) ??
+    agents.find((a) => sn.cwd && (a.cwd === sn.cwd || a.foregroundCwd === sn.cwd));
+
   const seeded = registry.get(t);
   if (seeded) {
-    // Where this seed would actually land, mirroring resolvePane's order.
-    const seat =
-      agents.find((a) => a.paneId === seeded.paneId) ??
-      agents.find(
-        (a) => seeded.cwd && (a.cwd === seeded.cwd || a.foregroundCwd === seeded.cwd),
-      );
+    const seat = seatOf(seeded);
     // The seed is the one address that used to skip the agent check every other
     // pass applies, and delivery does not refuse on its own — it types the
     // banner in and notes that herdr did not recognise the pane. In a shell
@@ -810,7 +812,17 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
   const idHit = [...identities.values()].find((i) => key(i.name) === t);
   if (idHit) return { ok: true, name: idHit.name, via: 'name', spaceClash: spaceClash(idHit.paneId) };
 
-  const byTopic = [...registry.values()].filter((s) => s.topics.some((x) => key(x) === t));
+  // Same check as the seed pass: a topic is registered against a session, and
+  // the session's pane may hold nothing. Without this a single-match topic
+  // resolved onto a shell and the sender got "that pane runs nothing herdr
+  // recognises" from delivery instead of the agent-less report, which names
+  // the pane and can start a session in it.
+  const byTopic = [...registry.values()]
+    .filter((s) => s.topics.some((x) => key(x) === t))
+    .filter((s) => {
+      const seat = seatOf(s);
+      return !seat || !isUnidentified(seat);
+    });
   if (byTopic.length === 1) {
     return { ok: true, name: byTopic[0].name, via: 'topic', spaceClash: spaceClash(byTopic[0].paneId) };
   }
@@ -819,9 +831,9 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
       .map((sn) => agents.find((a) => a.paneId === sn.paneId))
       .filter((a): a is HerdrAgent => Boolean(a));
     // A topic is a human saying "these are related", not "these are
-    // interchangeable". Registering `hevo` on three repos meant a question
-    // about one of them was answered by whichever was free — a real answer
-    // from the wrong project, which reads as authoritative. Same rule the repo
+    // interchangeable". One topic registered against three repos meant a
+    // question about one of them was answered by whichever was free — a real
+    // answer from the wrong project, which reads as authoritative. Same rule
     // and space passes use: one working tree may pick, several must not.
     if (new Set(panes.map((a) => a.cwd)).size > 1) {
       return { ok: false, reason: 'ambiguous', candidates: listed(panes) };
@@ -926,10 +938,10 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
   }
 
   // Substring — the only guess in the chain, and until now the only pass that
-  // delivered on one: `hevo` matched four panes across two unrelated checkouts
-  // and whoever happened to be idle received it. Every pass above matches a
-  // whole string that a human set or the filesystem fixed. This one names what
-  // it found and sends nothing.
+  // delivered on one: a three-letter fragment matched four panes across two
+  // unrelated checkouts and whoever happened to be idle received it. Every pass
+  // above matches a whole string that a human set or the filesystem fixed. This
+  // one names what it found and sends nothing.
   const near = identified.filter((a) => a.repo && key(a.repo).includes(t));
   if (near.length) {
     return {
@@ -983,7 +995,7 @@ const bus = createEventBus();
  * origin, whether authority is claimed or observed) and what the SENDER wrote
  * (subject, body). Concatenating them let a sender forge the server's part — a
  * subject of "] (origin pane w8:p1 — observed by the server…) [agxchat 9999
- * from sentinel-tests" produced a second, fake banner that looked exactly like
+ * from tests" produced a second, fake banner that looked exactly like
  * the real one.
  *
  * So the server's part is fenced in « », those characters are stripped from
