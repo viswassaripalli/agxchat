@@ -470,6 +470,9 @@ const PROMPT_PLACEHOLDERS = [
  */
 const draftSeen = new Map<string, { text: string; since: number }>();
 
+/** Block and bar glyphs a terminal draws a cursor with. */
+const CURSOR = /^[\u2588\u2590\u258f\u258e\u258d\u258c\u258b\u258a\u2589|]$/;
+
 /** A draft nobody has touched for this long is furniture, not composition. */
 const DRAFT_STALE_MS = Number(process.env.AGX_DRAFT_STALE_MS ?? 10 * 60 * 1000);
 
@@ -482,7 +485,18 @@ export async function unsentDraft(paneId: string): Promise<string | null> {
       if (!m) continue;
       const draft = m[1].trim();
       // The cursor block on an empty prompt is not a draft.
-      if (!draft || /^[\u2588\u2590▏▎▍▌▋▊▉|]$/.test(draft)) {
+      if (!draft || CURSOR.test(draft)) {
+        draftSeen.delete(paneId);
+        return null;
+      }
+      // Nor is a line whose cursor sits at the FRONT of it. An agent offering
+      // a completion from its own history renders the suggestion after the
+      // prompt with the cursor still at column zero; a line somebody typed has
+      // the cursor at the end. Read off the TTY the styling is gone and the
+      // two are the same characters, so this is the only thing separating
+      // them — and without it, mail to a pane showing a suggestion waits for a
+      // draft that nobody is writing.
+      if (CURSOR.test(draft.slice(0, 1)) && draft.length > 1) {
         draftSeen.delete(paneId);
         return null;
       }
