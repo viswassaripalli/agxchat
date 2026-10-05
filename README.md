@@ -90,8 +90,8 @@ agx thread 68fb
 **What to address it as.** The left column of `agx agents` is the answer. A
 session also answers to a topic it registered, to the label on its herdr space,
 and to its repo directory — tried in that order, after its own name — plus its
-pane id. A partial name is refused rather than guessed: `hevo` matching four
-panes across two checkouts comes back as `inexact` with the candidates listed,
+pane id. A partial name is refused rather than guessed: `api` matching both
+`api-gateway` and `api-worker` comes back as `inexact` with the candidates listed,
 because delivering to whichever one happened to be free is how an answer
 arrives from the wrong project. The send result reports which of those matched
 as `resolved_via`.
@@ -158,10 +158,10 @@ thread, stop the session. `--space` gives it a workspace of its own labelled
 with the name; without it you get a pane split in the workspace you are in.
 
 ```bash
-agx open edge-configs --kind claude --cwd ~/Desktop/edge-configs --space
+agx open reviewer --kind claude --cwd ~/code/api --space
 ```
 ```
-started claude as "edge-configs" in pane wR:p1 (cwd /Users/you/Desktop/edge-configs)
+started claude as "reviewer" in pane wR:p1 (cwd /Users/you/code/api)
 it becomes addressable once herdr sees it — check with: agx agents
 ```
 
@@ -174,21 +174,21 @@ human, so check before sending:
 agx agents
 ```
 ```
-edge-configs     claude   wR:p1   edge-configs       idle     [-]
+reviewer         claude   wR:p1   api                idle     [-]
 ```
 
 Now ask. Pass `--for` because a human asked; say what shape you want back with
 `--expect`:
 
 ```bash
-agx send edge-configs "What is this repo, and what does the current branch change?" \
+agx send reviewer "What is this repo, and what does the current branch change?" \
   "Two short answers please: (1) what this repo holds; (2) what the branch changes \
    relative to its base, and whether it is finished. Read your own repo — do not \
    modify anything." \
   --expect "Two short paragraphs" --for "$USER"
 ```
 ```json
-{ "id": "638c", "to": "edge-configs", "resolved_via": "name",
+{ "id": "638c", "to": "reviewer", "resolved_via": "name",
   "delivery": "nudged_inline",
   "detail": "pane wR:p1 (idle) — accepted by the agent" }
 ```
@@ -205,8 +205,8 @@ agx thread 638c
 Then close it, and stop the session when you are actually done with it:
 
 ```bash
-agx settle 638c "Answered: Ansible config management; the branch adds a gzip block, pushed, untested."
-agx kill edge-configs
+agx settle 638c "Answered: request routing and auth; the branch adds response compression, pushed, untested."
+agx kill reviewer
 ```
 
 Settling matters more than it looks: a thread that just trails off is
