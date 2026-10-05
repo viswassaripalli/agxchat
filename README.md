@@ -31,7 +31,7 @@ MCP-over-HTTP. [herdr](https://herdr.dev) carries the wake-up.
 | **OS** | macOS and Linux. Origin verification uses `lsof` and `ps`; without them it degrades to self-reported |
 | **Agents** | already running in herdr panes. herdr recognises Claude Code, Codex, Cursor, opencode, Gemini, Copilot and more; anything it does not recognise is still reachable, see below |
 
-## Download and install
+## Install
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/viswassaripalli/agxchat/main/install.sh | bash
@@ -41,27 +41,24 @@ Clones to `~/.agxchat`, installs dependencies, links `agx` onto your PATH,
 detects your sessions from herdr's panes, writes the rule that teaches agents to
 use it, starts the server, and opens the chat in its own **AGxChat** workspace.
 
-```bash
-agx update             # pull changes, reinstall deps, restart the server
-agx uninstall --yes    # remove everything; keeps seed and mail in a backup
-```
-
 Two steps reach outside the install directory and can be skipped:
 `AGX_NO_RULE=1` (do not write to agent instruction files) and `AGX_NO_START=1`
 (do not start the server or open the workspace).
 
-**Teaching your sessions.** `agx` works as soon as it is on PATH, but a session
-only reaches for it if told to. `agx rule install` writes a marked block into
-every agent instruction file it finds — Claude, Codex, Cursor, opencode,
-Antigravity (`~/.gemini/AGENTS.md` and `GEMINI.md`) — backing each up first.
-Antigravity's CLI is `agy`; `gemini` is a different tool with its own binary, so
-use `--kind agy` for it.
-For an agent not on that list, name its file:
-`AGX_RULE_TARGETS=~/.thatagent/AGENTS.md agx rule install`. `agx rule targets` lists them, `show` prints the text,
-`remove` takes it out. Instruction files are read at session start, so restart a
-session for it to apply.
+### Teaching your sessions
 
-## Install as a herdr plugin
+`agx` works as soon as it is on PATH, but a session only reaches for it if told
+to. `agx rule install` writes a marked block into every agent instruction file
+it finds — Claude, Codex, Cursor, opencode, Antigravity (`~/.gemini/AGENTS.md`
+and `GEMINI.md`) — backing each up first. Antigravity's CLI is `agy`; `gemini`
+is a different tool with its own binary, so use `--kind agy` for it.
+
+For an agent not on that list, name its file:
+`AGX_RULE_TARGETS=~/.thatagent/AGENTS.md agx rule install`. `agx rule targets`
+lists them, `show` prints the text, `remove` takes it out. Instruction files are
+read at session start, so restart a session for it to apply.
+
+### As a herdr plugin
 
 An alternative to the installer, for people already living in herdr:
 
@@ -108,7 +105,28 @@ herdr plugin log list --plugin agxchat.mail
 herdr plugin unlink agxchat.mail
 ```
 
-## Talking to another session
+## Update
+
+```bash
+agx update             # pull changes, reinstall deps, restart the server
+```
+
+Re-running the installer does the same thing; it is idempotent. If you installed
+through herdr, reinstall instead — there is no `herdr plugin update`:
+
+```bash
+herdr plugin install viswassaripalli/agxchat
+```
+
+Your mailbox, token and spill files survive both: the installer leaves `.run`
+alone, and the plugin keeps its state in herdr's own state directory rather than
+in the managed checkout.
+
+```bash
+agx uninstall --yes    # remove everything; keeps seed and mail in a backup
+```
+
+## Use
 
 Once the rule is installed you use plain words in any session; it turns them
 into `agx` calls and reports the message id without blocking.
@@ -131,6 +149,18 @@ agx inbox
 agx reply 68fb "Yes — StatusLabel, exported from the design system."
 agx thread 68fb
 ```
+
+**What to address it as.** The left column of `agx agents` is the answer. A
+session also answers to a topic it registered, to the label on its herdr space,
+and to its repo directory — tried in that order, after its own name — plus its
+pane id. A partial name is refused rather than guessed: `hevo` matching four
+panes across two checkouts comes back as `inexact` with the candidates listed,
+because delivering to whichever one happened to be free is how an answer
+arrives from the wrong project. The send result reports which of those matched
+as `resolved_via`.
+
+A pane with no agent in it — a plain shell — is never reachable by name, only
+by its pane id. Typing into one would run the message as a command.
 
 ## Sending files
 
@@ -183,6 +213,68 @@ with its own mailbox, addressable by name by anyone. The installed rule tells
 sessions which to use when, so ask in plain words and you get panes; if you get
 subagents instead, that session has not picked up the rule — restart it, or
 check `agx rule targets`.
+
+### A worked example
+
+Start a session in its own space, ask it something, read the answer, close the
+thread, stop the session. `--space` gives it a workspace of its own labelled
+with the name; without it you get a pane split in the workspace you are in.
+
+```bash
+agx open edge-configs --kind claude --cwd ~/Desktop/edge-configs --space
+```
+```
+started claude as "edge-configs" in pane wR:p1 (cwd /Users/you/Desktop/edge-configs)
+it becomes addressable once herdr sees it — check with: agx agents
+```
+
+It is not addressable the instant the command returns — herdr has to see the
+agent come up, which takes a few seconds. A session started somewhere that
+agent does not already trust stops at its own trust prompt and waits for a
+human, so check before sending:
+
+```bash
+agx agents
+```
+```
+edge-configs     claude   wR:p1   edge-configs       idle     [-]
+```
+
+Now ask. Pass `--for` because a human asked; say what shape you want back with
+`--expect`:
+
+```bash
+agx send edge-configs "What is this repo, and what does the current branch change?" \
+  "Two short answers please: (1) what this repo holds; (2) what the branch changes \
+   relative to its base, and whether it is finished. Read your own repo — do not \
+   modify anything." \
+  --expect "Two short paragraphs" --for "$USER"
+```
+```json
+{ "id": "638c", "to": "edge-configs", "resolved_via": "name",
+  "delivery": "nudged_inline",
+  "detail": "pane wR:p1 (idle) — accepted by the agent" }
+```
+
+`resolved_via` says which pass matched the name — `name` here, but `space` if
+you addressed it by the label on the workspace, or `repo` by directory. Do not
+wait on the answer; it is nudged into your pane when it arrives. The nudge line
+is truncated, so read the thread for the full body:
+
+```bash
+agx thread 638c
+```
+
+Then close it, and stop the session when you are actually done with it:
+
+```bash
+agx settle 638c "Answered: Ansible config management; the branch adds a gzip block, pushed, untested."
+agx kill edge-configs
+```
+
+Settling matters more than it looks: a thread that just trails off is
+indistinguishable from one still owed a reply, and `agx open-threads` is how
+everyone finds out which is which.
 
 ## Runaway loops
 
