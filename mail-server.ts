@@ -718,31 +718,79 @@ type Resolution =
   | {
       ok: true;
       name: string;
-      via: 'name' | 'topic' | 'repo' | 'pane';
+      via: 'name' | 'topic' | 'space' | 'repo' | 'pane';
       chosen?: { paneId: string | null; status: string; among: { name: string; status: string }[] };
+      /**
+       * Set when the name resolved one way but is also a space label on a
+       * DIFFERENT pane. Not an error: a seeded name beats a window title, and
+       * refusing would break addresses that work today. But a human reading a
+       * space called `x` on screen has no other way to learn their mail went
+       * somewhere else, so the send result says so.
+       */
+      spaceClash?: { label: string; panes: { name: string; paneId: string | null }[]; note: string };
     }
   | { ok: false; reason: 'unknown'; known: string[] }
-  | { ok: false; reason: 'ambiguous'; candidates: { name: string; repo: string | null; paneId: string | null }[] };
+  | { ok: false; reason: 'ambiguous'; candidates: { name: string; repo: string | null; paneId: string | null }[] }
+  /** A substring of some repo name, which is a guess rather than an address. */
+  | {
+      ok: false;
+      reason: 'inexact';
+      candidates: { name: string; repo: string | null; paneId: string | null }[];
+      hint: string;
+    };
 
 /**
- * Three passes: agent name → registered topic → repo (exact, then substring).
- * Ambiguity returns the candidates with their repos instead of guessing —
- * two panes can legitimately hold the same repo name from different worktrees.
+ * Passes: agent name → registered topic → pane id → space label → repo (exact,
+ * then substring). Ambiguity returns the candidates with their repos instead of
+ * guessing — two panes can legitimately hold the same repo name from different
+ * worktrees, and two spaces can legitimately hold the same label.
  */
 async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resolution> {
   const t = key(to);
+  const identities = await paneIdentities(agents);
 
-  if (registry.has(t)) return { ok: true, name: registry.get(t)!.name, via: 'name' };
+  const nameOfPane = (a: HerdrAgent) =>
+    identities.get(a.paneId!)?.name ??
+    [...registry.values()].find((sn) => sn.paneId === a.paneId)?.name ??
+    a.paneId!;
+
+  // Panes whose space carries this label, needed before the first pass rather
+  // than at the space pass: a name can resolve by seed and still be the label
+  // a human is reading off a different window.
+  const labelled = agents.filter(
+    (a) => !isUnidentified(a) && a.workspaceLabel && key(a.workspaceLabel) === t,
+  );
+  const spaceClash = (paneId: string | null) =>
+    labelled.length && !labelled.some((a) => a.paneId === paneId)
+      ? {
+          label: to,
+          panes: labelled.map((a) => ({ name: nameOfPane(a), paneId: a.paneId })),
+          note: `"${to}" is also the label of a space holding a different session. This went to the registered name. Address the pane id if you meant the space.`,
+        }
+      : undefined;
+
+  const seeded = registry.get(t);
+  if (seeded) {
+    return { ok: true, name: seeded.name, via: 'name', spaceClash: spaceClash(seeded.paneId) };
+  }
 
   const herdrNamed = agents.filter((a) => a.name && key(a.name) === t);
-  if (herdrNamed.length === 1) return { ok: true, name: herdrNamed[0].name!, via: 'name' };
+  if (herdrNamed.length === 1) {
+    return {
+      ok: true,
+      name: herdrNamed[0].name!,
+      via: 'name',
+      spaceClash: spaceClash(herdrNamed[0].paneId),
+    };
+  }
 
-  const identities = await paneIdentities(agents);
   const idHit = [...identities.values()].find((i) => key(i.name) === t);
-  if (idHit) return { ok: true, name: idHit.name, via: 'name' };
+  if (idHit) return { ok: true, name: idHit.name, via: 'name', spaceClash: spaceClash(idHit.paneId) };
 
   const byTopic = [...registry.values()].filter((s) => s.topics.some((x) => key(x) === t));
-  if (byTopic.length === 1) return { ok: true, name: byTopic[0].name, via: 'topic' };
+  if (byTopic.length === 1) {
+    return { ok: true, name: byTopic[0].name, via: 'topic', spaceClash: spaceClash(byTopic[0].paneId) };
+  }
   if (byTopic.length > 1) {
     const panes = byTopic
       .map((sn) => agents.find((a) => a.paneId === sn.paneId))
@@ -768,33 +816,98 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
     };
   }
 
+  // A pane id addresses a pane, but a THREAD should be addressed to whoever is
+  // in it: agents move between panes, and a thread pinned to `wB:p1` keeps
+  // pointing at the pane after the agent has gone, which is how 65ba was typed
+  // into a prompt nobody was reading. Resolve to the identity when the pane has
+  // one; keep the raw id when it does not, so a plain shell can still be
+  // targeted deliberately rather than by a name that happens to match.
   const paneHit = agents.find((a) => a.paneId === to);
-  if (paneHit) return { ok: true, name: paneHit.paneId!, via: 'pane' };
-
-  const identified = agents.filter((a) => !isUnidentified(a));
-  const exact = identified.filter((a) => a.repo && key(a.repo) === t);
-  const pool = exact.length ? exact : identified.filter((a) => a.repo && key(a.repo).includes(t));
-  if (pool.length === 1) {
-    const a = pool[0];
-    const registered = [...registry.values()].find((s) => s.paneId === a.paneId);
-    return { ok: true, name: registered?.name ?? a.paneId!, via: 'repo' };
-  }
-  if (pool.length > 1) {
-    const identities = await paneIdentities(agents);
-    const winner = await pickReadiest(pool, agents);
-    const nameOf = (a: HerdrAgent) =>
-      identities.get(a.paneId!)?.name ??
-      [...registry.values()].find((sn) => sn.paneId === a.paneId)?.name ??
-      a.paneId!;
+  if (paneHit) {
     return {
       ok: true,
-      name: nameOf(winner),
+      name: isUnidentified(paneHit) ? paneHit.paneId! : nameOfPane(paneHit),
+      via: 'pane',
+    };
+  }
+
+  // Space label. People address the window they can see, and the label is the
+  // only name herdr puts on screen — but it is not a mailbox, so it sits below
+  // every registered name and above the repo basename, which is merely derived
+  // from a path. Unidentified panes are excluded for the same reason the repo
+  // pass excludes them: "ask voltron" must not land in a plain shell that
+  // happens to sit in that space, where the text would be run as a command.
+  if (labelled.length) {
+    // herdr does not enforce unique labels, and two spaces sharing one is how
+    // a message reaches the wrong session without anyone seeing an error.
+    // Across spaces this refuses; within one space it picks, because panes in
+    // the same space are the same work in front of the same human.
+    if (new Set(labelled.map((a) => a.workspaceId)).size > 1) {
+      return {
+        ok: false,
+        reason: 'ambiguous',
+        candidates: labelled.map((a) => ({ name: nameOfPane(a), repo: a.repo, paneId: a.paneId })),
+      };
+    }
+    const winner = labelled.length === 1 ? labelled[0] : await pickReadiest(labelled, agents);
+    return {
+      ok: true,
+      name: nameOfPane(winner),
+      via: 'space',
+      chosen:
+        labelled.length > 1
+          ? {
+              paneId: winner.paneId,
+              status: winner.status,
+              among: labelled.map((a) => ({ name: nameOfPane(a), status: a.status })),
+            }
+          : undefined,
+    };
+  }
+
+  const identified = agents.filter((a) => !isUnidentified(a));
+  const listed = (pool: HerdrAgent[]) =>
+    pool.map((a) => ({ name: nameOfPane(a), repo: a.repo, paneId: a.paneId }));
+
+  // Exact repo name. Several panes can carry it two different ways: one
+  // checkout open in two panes — same code, same human, so pick — or two
+  // unrelated worktrees that happen to share a repo name, where picking
+  // answers as the wrong project. Split on cwd, the same way the space pass
+  // splits on workspace.
+  const exact = identified.filter((a) => a.repo && key(a.repo) === t);
+  if (exact.length) {
+    if (new Set(exact.map((a) => a.cwd)).size > 1) {
+      return { ok: false, reason: 'ambiguous', candidates: listed(exact) };
+    }
+    const winner = exact.length === 1 ? exact[0] : await pickReadiest(exact, agents);
+    const registered = [...registry.values()].find((s) => s.paneId === winner.paneId);
+    return {
+      ok: true,
+      name: registered?.name ?? nameOfPane(winner),
       via: 'repo',
-      chosen: {
-        paneId: winner.paneId,
-        status: winner.status,
-        among: pool.map((a) => ({ name: nameOf(a), status: a.status })),
-      },
+      chosen:
+        exact.length > 1
+          ? {
+              paneId: winner.paneId,
+              status: winner.status,
+              among: exact.map((a) => ({ name: nameOfPane(a), status: a.status })),
+            }
+          : undefined,
+    };
+  }
+
+  // Substring — the only guess in the chain, and until now the only pass that
+  // delivered on one: `hevo` matched four panes across two unrelated checkouts
+  // and whoever happened to be idle received it. Every pass above matches a
+  // whole string that a human set or the filesystem fixed. This one names what
+  // it found and sends nothing.
+  const near = identified.filter((a) => a.repo && key(a.repo).includes(t));
+  if (near.length) {
+    return {
+      ok: false,
+      reason: 'inexact',
+      candidates: listed(near),
+      hint: `"${to}" is not an address — it only appears inside one. Send to one of the names in candidates, or to a pane id.`,
     };
   }
 
@@ -1490,13 +1603,14 @@ function buildMcpServer(identity: string | null) {
       await persist(m);
       bus.emit({ type: 'mail', mail: m });
 
-      const res = await deliver(m, { loose: resolved.via === 'repo' || resolved.via === 'topic' });
+      const res = await deliver(m, { loose: resolved.via === 'repo' || resolved.via === 'topic' || resolved.via === 'space' });
       await persist(m);
       return ok({
         id: m.id,
         to: m.to,
-        via: resolved.via,
+        resolved_via: resolved.via,
         chosen: resolved.chosen,
+        space_clash: resolved.spaceClash,
         requested_by: m.requestedBy,
         via: m.via,
         provenance: m.requestedBy ? (m.via ? 'second-hand (relayed)' : 'first-hand claim, unverified') : 'none',
@@ -1972,14 +2086,16 @@ app.post('/mail', async (req, res) => {
   mail.set(m.id, m);
   await persist(m);
   bus.emit({ type: 'mail', mail: m });
-  const out = await deliver(m, { loose: resolved.via === 'repo' || resolved.via === 'topic' });
+  const out = await deliver(m, { loose: resolved.via === 'repo' || resolved.via === 'topic' || resolved.via === 'space' });
   await persist(m);
   const senderCwd = m.fromPaneId ? agents.find((a) => a.paneId === m.fromPaneId)?.cwd : null;
   const siblings = senderCwd ? agents.filter((a) => a.cwd === senderCwd).map((a) => a.paneId) : [];
   res.json({
     id: m.id,
     to: m.to,
+    resolved_via: resolved.via,
     chosen: resolved.chosen,
+    space_clash: resolved.spaceClash,
     delivery: out.delivery,
     detail: out.detail,
     reply_lands_in: m.fromPaneId ?? 'the canonical pane for your name',

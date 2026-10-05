@@ -38,6 +38,8 @@ export type HerdrAgent = {
   paneId: string | null;
   tabId: string | null;
   workspaceId: string | null;
+  /** The space's human label. Not on `agent list` — joined in from `workspace list`. */
+  workspaceLabel: string | null;
   terminalId: string | null;
   sessionId: string | null;
   focused: boolean;
@@ -70,6 +72,7 @@ function pickAgentFields(raw: any): HerdrAgent {
     paneId: typeof raw?.pane_id === 'string' ? raw.pane_id : null,
     tabId: typeof raw?.tab_id === 'string' ? raw.tab_id : null,
     workspaceId: typeof raw?.workspace_id === 'string' ? raw.workspace_id : null,
+    workspaceLabel: null, // joined in by listAgents()
     terminalId: typeof raw?.terminal_id === 'string' ? raw.terminal_id : null,
     sessionId: typeof raw?.agent_session?.value === 'string' ? raw.agent_session.value : null,
     focused: raw?.focused === true,
@@ -119,14 +122,50 @@ async function readBranch(cwd: string | null): Promise<string | null> {
   }
 }
 
+/**
+ * Space labels, keyed by workspace id.
+ *
+ * Neither `agent list` nor `pane list` carries the label — they report
+ * `workspace_id` only — so it is joined in from `workspace list`. Cached
+ * because the agent poll runs every second and a label changes about as often
+ * as a human renames a space. A herdr without the subcommand yields an empty
+ * map, which simply leaves the space pass with nothing to match.
+ */
+let labelCache: { at: number; byId: Map<string, string> } | null = null;
+const LABEL_TTL_MS = Number(process.env.AGX_LABEL_TTL_MS ?? 10_000);
+
+export async function workspaceLabels(): Promise<Map<string, string>> {
+  if (labelCache && Date.now() - labelCache.at < LABEL_TTL_MS) return labelCache.byId;
+  const byId = new Map<string, string>();
+  try {
+    const { stdout } = await exec(HERDR, ['workspace', 'list'], { maxBuffer: 4 * 1024 * 1024 });
+    for (const w of unwrap(stdout)?.workspaces ?? []) {
+      if (typeof w?.workspace_id === 'string' && typeof w?.label === 'string' && w.label) {
+        byId.set(w.workspace_id, w.label);
+      }
+    }
+  } catch {
+    // Leave the map empty rather than failing the listing: routing still has
+    // every pass it had before this one existed.
+  }
+  labelCache = { at: Date.now(), byId };
+  return byId;
+}
+
 export async function listAgents(withBranch = true): Promise<HerdrAgent[]> {
   const { stdout } = await exec(HERDR, ['agent', 'list'], { maxBuffer: 8 * 1024 * 1024 });
   const agents: any[] = unwrap(stdout)?.agents ?? [];
   const mapped = agents.map(pickAgentFields);
+  const labels = await workspaceLabels();
   return Promise.all(
     mapped.map(async (a) => {
       const { root, repo } = await resolveRepo(a.cwd);
-      return { ...a, repo, branch: withBranch ? await readBranch(root ?? a.cwd) : null };
+      return {
+        ...a,
+        repo,
+        workspaceLabel: a.workspaceId ? (labels.get(a.workspaceId) ?? null) : null,
+        branch: withBranch ? await readBranch(root ?? a.cwd) : null,
+      };
     }),
   );
 }
@@ -190,6 +229,7 @@ export type NudgeResult = {
 export async function listPlainPanes(): Promise<HerdrAgent[]> {
   const { stdout } = await exec(HERDR, ['pane', 'list'], { maxBuffer: 8 * 1024 * 1024 });
   const panes: any[] = unwrap(stdout)?.panes ?? [];
+  const labels = await workspaceLabels();
   return Promise.all(
     panes.map(async (raw) => {
       const cwd = typeof raw?.cwd === 'string' ? raw.cwd : null;
@@ -203,6 +243,8 @@ export async function listPlainPanes(): Promise<HerdrAgent[]> {
         paneId: typeof raw?.pane_id === 'string' ? raw.pane_id : null,
         tabId: typeof raw?.tab_id === 'string' ? raw.tab_id : null,
         workspaceId: typeof raw?.workspace_id === 'string' ? raw.workspace_id : null,
+        workspaceLabel:
+          typeof raw?.workspace_id === 'string' ? (labels.get(raw.workspace_id) ?? null) : null,
         terminalId: typeof raw?.terminal_id === 'string' ? raw.terminal_id : null,
         sessionId: null,
         focused: raw?.focused === true,
@@ -387,6 +429,30 @@ export async function inferKind(paneId: string): Promise<string | null> {
  * draft, the marker is followed by the text. Read conservatively — if there is
  * any content on that line, the mail waits.
  */
+/**
+ * Hint text an agent renders INSIDE its own empty prompt box.
+ *
+ * Observed holding mail 1e05 indefinitely: claude shows `Try "edit <filepath>
+ * to..."` on an idle empty prompt, which reads off the TTY exactly like a
+ * half-written sentence, so delivery deferred waiting for a human to send
+ * something that does not exist.
+ *
+ * Deliberately one verified pattern. The asymmetry is brutal: a missing
+ * pattern delays mail, while a WRONG pattern submits over a person's unsent
+ * work. Add to this only from a prompt you have actually read off a pane.
+ */
+const PROMPT_PLACEHOLDERS = [/^Try\s+["\u201c]/i];
+
+/**
+ * Drafts seen per pane, to tell a draft being written from one that is parked.
+ * Module-level and unbounded by design: one small entry per pane id, and the
+ * process holding it is the mail server itself.
+ */
+const draftSeen = new Map<string, { text: string; since: number }>();
+
+/** A draft nobody has touched for this long is furniture, not composition. */
+const DRAFT_STALE_MS = Number(process.env.AGX_DRAFT_STALE_MS ?? 10 * 60 * 1000);
+
 export async function unsentDraft(paneId: string): Promise<string | null> {
   try {
     const screen = await readPane(paneId, 14);
@@ -396,8 +462,25 @@ export async function unsentDraft(paneId: string): Promise<string | null> {
       if (!m) continue;
       const draft = m[1].trim();
       // The cursor block on an empty prompt is not a draft.
-      return draft && !/^[\u2588\u2590▏▎▍▌▋▊▉|]$/.test(draft) ? draft : null;
+      if (!draft || /^[\u2588\u2590▏▎▍▌▋▊▉|]$/.test(draft)) {
+        draftSeen.delete(paneId);
+        return null;
+      }
+      if (PROMPT_PLACEHOLDERS.some((re) => re.test(draft))) {
+        draftSeen.delete(paneId);
+        return null;
+      }
+      // Someone composing changes the line; parked text does not. Holding mail
+      // on text that has not moved in ten minutes is indistinguishable from
+      // losing it, which is what deferring forever on a placeholder did.
+      const prev = draftSeen.get(paneId);
+      if (!prev || prev.text !== draft) {
+        draftSeen.set(paneId, { text: draft, since: Date.now() });
+        return draft;
+      }
+      return Date.now() - prev.since >= DRAFT_STALE_MS ? null : draft;
     }
+    draftSeen.delete(paneId);
   } catch {
     /* cannot read the pane: say nothing rather than guess */
   }
