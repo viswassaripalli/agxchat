@@ -1,66 +1,72 @@
 #!/usr/bin/env bash
-# Bring up a demo mailbox that talks to a scripted herdr instead of a terminal.
+# The demo mailbox: a real server, driving a real herdr, in a session of its own.
 #
-#   bash demo/run.sh start    # server on :7788, four fake sessions, fresh store
-#   bash demo/run.sh seed     # a couple of threads so the chat view has content
-#   bash demo/run.sh stop
+#   bash demo/run.sh start    # mail server on :7788, pointed at the demo session
+#   bash demo/run.sh stop     # server and demo session, nothing else
 #
-# Nothing here touches your real mailbox, your panes, or port 7777: the store,
-# the token, the seed, the port and the herdr binary all point somewhere else,
-# and stop kills this server by recorded pid rather than by process name, which
-# would take the real one with it.
+# Then record:  vhs demo/demo.tape
+#
+# Nothing here reaches your mailbox or your panes. The port, store, token and
+# seed all point inside demo/, and HERDR_BIN points at a herdr pinned to the
+# `agxdemo` session, which has its own socket — so every pane the demo creates
+# and every nudge it types stays there.
 set -euo pipefail
 
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
 STATE="$HERE/.state"
+SESSION="${AGX_DEMO_SESSION:-agxdemo}"
 
-export HERDR_BIN="$HERE/fake-herdr"
+export HERDR_BIN="$HERE/herdr-demo"
+export AGX_DEMO_SESSION="$SESSION"
 export AGX_PORT=7788
 export AGX_STORE="$STATE/mail.jsonl"
 export AGX_TOKEN_FILE="$STATE/token"
 export AGX_SEED="$HERE/seed.json"
 export AGX_NO_CHAT=1
-# No shared secret for the demo: the CLI looks for the token under the install
-# directory, which belongs to the real mailbox, and a demo that makes you copy
-# a token around is a demo nobody runs.
+# No shared secret: the CLI looks for a token under the install directory,
+# which belongs to the real mailbox, and a demo that makes you copy a token
+# around is a demo nobody runs.
 export AGX_NO_AUTH=1
 
 up() { curl -sf --max-time 2 "http://127.0.0.1:7788/health" >/dev/null 2>&1; }
-dagx() { AGX_PORT=7788 "$ROOT/agx" "$@"; }
-first_id() { dagx inbox "$1" 2>/dev/null | sed -n 's/^\[\([0-9a-f]*\)\].*/\1/p' | head -1; }
 
 case "${1:-start}" in
   start)
     mkdir -p "$STATE"
+    chmod +x "$HERE/herdr-demo" "$HERE/agent.sh" "$HERE/setup.sh"
+    # The panes must not sit in the server's own directory: listTargets drops a
+    # pane whose cwd is the server's, so that the mailbox never addresses the
+    # terminal it is running in. The attaching pane inherits the recorder's cwd,
+    # so the recording starts from one of these instead.
+    BASE="${AGX_DEMO_DIR:-/tmp/agxdemo}"
+    for n in web api tests; do mkdir -p "$BASE/$n"; done
+    # A fixed entry point the pane can reach without knowing where the repo is:
+    # its shell starts clean, so nothing from the recorder's environment is there
+    # to tell it.
+    printf '#!/usr/bin/env bash\nexec bash %s/setup.sh "$@"\n' "$HERE" > "$BASE/setup"
+    chmod +x "$BASE/setup"
     up && { echo "demo mailbox already up on :7788"; exit 0; }
     rm -f "$AGX_STORE" "$AGX_TOKEN_FILE"
-    chmod +x "$HERDR_BIN"
     cd "$ROOT"
     nohup node_modules/.bin/tsx mail-server.ts </dev/null >"$STATE/server.log" 2>&1 &
     echo $! > "$STATE/server.pid"
     for _ in $(seq 20); do up && break; sleep 0.5; done
     up || { tail -20 "$STATE/server.log"; exit 1; }
-    echo "demo mailbox up on :7788"
-    ;;
-
-  seed)
-    dagx --from design send tests "Which suites cover the status pills?" \
-      "I am changing the colour mapping and want to know what asserts on it before I touch anything." \
-      --expect "suite names" >/dev/null
-    tid="$(first_id tests)"
-    [ -n "$tid" ] && dagx --from tests reply "$tid" \
-      "None of them assert pill text. Two assert the colour class: status-badge.spec and pipeline-row.spec." >/dev/null
-    dagx --from web send api "Error shape is changing" \
-      "The 422 body becomes {errors:[{field,message}]}. Does anything of yours read the old flat shape?" >/dev/null
-    echo "seeded"
+    echo "demo mailbox up on :7788 — session '$SESSION'"
     ;;
 
   stop)
+    # By recorded pid, never by process name: pkill -f mail-server.ts would
+    # take the real server with it.
     if [ -f "$STATE/server.pid" ] && kill "$(cat "$STATE/server.pid")" 2>/dev/null; then
-      rm -f "$STATE/server.pid"; echo "stopped"
+      rm -f "$STATE/server.pid"; echo "server stopped"
     else
-      echo "was not running"
+      echo "server was not running"
     fi
+    # Delete, not just stop: herdr restores a stopped session's layout on the
+    # next attach, so a second recording opens with the first one's panes.
+    herdr session stop "$SESSION" >/dev/null 2>&1 || true
+    herdr session delete "$SESSION" >/dev/null 2>&1 && echo "session '$SESSION' removed" || true
     ;;
 esac

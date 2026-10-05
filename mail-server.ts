@@ -1110,7 +1110,7 @@ async function nudgeNow(m: Mail, paneId: string, status: string) {
         'not typing into it — answer it and this will be delivered';
       return;
     }
-    const res = await nudge(paneId, nudgeText(m));
+    const res = await nudge(paneId, nudgeText(m), { typedOnly: m.targetKindUnknown === true });
     m.delivery = m.inline ? 'nudged_inline' : 'nudged_idle';
     m.nudgedAt = Date.now();
     if (res.confirmed) {

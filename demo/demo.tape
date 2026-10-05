@@ -1,52 +1,59 @@
-# Record the README demo:  vhs demo/demo.tape
+# Record the README demo:
 #
-# Runs against the scripted mailbox from demo/run.sh, so the frames are the
-# same every time and nothing in them is anyone's real repository.
-#
-#   bash demo/run.sh start && bash demo/run.sh seed
+#   bash demo/run.sh start
 #   vhs demo/demo.tape
+#   bash demo/run.sh stop
+#
+# This records a real herdr session with real panes. The mail that appears in
+# the right-hand panes was typed there by the server, over the same
+# send-text/Enter path delivery uses for a live agent.
 
 Output docs/demo.gif
-Output docs/demo.txt
 
 Set Shell bash
-Set FontSize 16
-Set Width 1180
-Set Height 640
-Set Padding 24
-Set TypingSpeed 45ms
+Set FontSize 13
+Set Width 1480
+Set Height 560
+Set Padding 20
+Set TypingSpeed 40ms
 Set Theme "Builtin Dark"
+# Start the loop past the empty prompt: frame one is what a still preview and a
+# paused player show, and an empty terminal says nothing.
+Set LoopOffset 15%
 
 Hide
-# HERDR_BIN matters here as much as it does for the server: without it the
-# CLI asks the real herdr which pane it is in, and the answer lands in the
-# recording as a pane id from whatever machine recorded it. HERDR_PANE_ID
-# is exported into every real herdr pane, so it has to be overridden too
-# or it is simply inherited from the terminal doing the recording.
-Type "export AGX_PORT=7788 AGX_ME=design HERDR_BIN=$PWD/demo/fake-herdr HERDR_PANE_ID=w4:p1 PATH=$PWD:$PATH PS1='$ '" Enter
+# herdr exports these into every pane and refuses to nest inside an existing
+# session, so a recording made from inside herdr never starts its own.
+Type "unset HERDR_SOCKET_PATH HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID" Enter
+Type "cd /tmp/agxdemo/web && export AGX_PORT=7788 PATH=$PWD:$PATH PS1='$ '" Enter
 Type "clear" Enter
 Show
 
-Sleep 700ms
+# Building the layout is hidden: a herdr pane starts the login shell, whose
+# prompt carries the username of whoever is recording, until setup replaces it.
+# The recording picks up once the three panes are up.
+Hide
+Type "herdr --session agxdemo" Enter
+Sleep 4s
+Type "/tmp/agxdemo/setup" Enter
+Sleep 7s
+Show
 
-# Who is live. Four sessions, three different agents, each its own mailbox.
-Type "agx agents" Sleep 400ms Enter
-Sleep 2600ms
+# Who is live. The right-hand panes answer to their labels.
+Type "agx agents" Sleep 300ms Enter
+Sleep 3s
 
-# Ask one of them something, and say what shape the answer should take.
-Type `agx send tests "Which suites cover the status pills?" \` Enter
-Type `  "Changing the colour mapping — what asserts on it?" \` Enter
-Type `  --expect "suite names"` Sleep 400ms Enter
-Sleep 3000ms
+# Ask one of them something. Watch the top-right pane: the question is typed
+# into its prompt and submitted - that is delivery, there is no other channel.
+# One line, not a continuation: delivery holds mail while a human is mid-way
+# through typing, and a half-typed second line is exactly that.
+Type `agx send tests "Which suites cover the status pills?" "Changing the colour mapping." --expect "suite names"` Sleep 300ms Enter
+Sleep 9s
 
-# The answer threads back into the mailbox rather than into a terminal.
-Type "agx inbox design" Sleep 400ms Enter
-Sleep 3400ms
+# The answer came back as mail, not as text stranded in a pane.
+Type "agx inbox web" Sleep 300ms Enter
+Sleep 4s
 
-# A name that is only part of another is refused, never guessed.
-Type `agx send test "typo" "typo"` Sleep 400ms Enter
-Sleep 2800ms
-
-# Nothing trails off: open threads say who owes the next message.
-Type "agx open-threads" Sleep 400ms Enter
-Sleep 3000ms
+# Nothing trails off: open threads name who owes the next message.
+Type "agx open-threads" Sleep 300ms Enter
+Sleep 4s

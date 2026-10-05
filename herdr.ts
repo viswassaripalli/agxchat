@@ -256,7 +256,11 @@ export async function listPlainPanes(): Promise<HerdrAgent[]> {
   );
 }
 
-export async function nudge(paneId: string, text: string): Promise<NudgeResult> {
+export async function nudge(
+  paneId: string,
+  text: string,
+  opts: { typedOnly?: boolean } = {},
+): Promise<NudgeResult> {
   // Test affordance: exercise routing and the wait guards without writing into
   // a live agent's TTY.
   // `??` binds looser than `===`, so the old form read as
@@ -271,7 +275,16 @@ export async function nudge(paneId: string, text: string): Promise<NudgeResult> 
   // Prefer herdr's own delivery where it exists: it owns the terminal, so it
   // knows when the text was accepted. Our send-text + Enter + read-back dance
   // exists only because 0.7.1 has no such command.
-  if ((process.env.AGX_FORCE_TTY_NUDGE ?? '0') !== '1' && (await supportsAgentPrompt())) {
+  // `agent prompt` is herdr's own delivery, and it only means anything for a
+  // pane herdr has classified as an agent. Asked to prompt a pane running
+  // something it does not recognise it reports success and submits nothing —
+  // so mail to such a pane read as delivered while the prompt stayed empty.
+  // Those panes get the typed path, which is what they were always reachable by.
+  if (
+    !opts.typedOnly &&
+    (process.env.AGX_FORCE_TTY_NUDGE ?? '0') !== '1' &&
+    (await supportsAgentPrompt())
+  ) {
     // --wait --until working turns delivery from "we typed it" into "herdr saw
     // the agent take it up". An agent that answers instantly may pass through
     // working before we look, so `done` and `blocked` also count as evidence

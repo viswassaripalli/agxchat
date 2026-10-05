@@ -233,15 +233,34 @@ request traced to a pane whose foreground process is that TUI.
 `docs/demo.gif` is recorded, not captured by hand:
 
 ```bash
-bash demo/run.sh start && bash demo/run.sh seed
+bash demo/run.sh start
 vhs demo/demo.tape
 bash demo/run.sh stop
 ```
 
-The frames come from a mailbox that talks to `demo/fake-herdr` instead of a
-terminal — four invented sessions across three agent kinds, its own port, store
-and seed, so a recording shows no real repository and comes out the same every
-time. Three things have to be redirected or the recording picks them up from
-whoever made it: `HERDR_BIN` for the server, `HERDR_BIN` again for the CLI, and
-`HERDR_PANE_ID`, which herdr exports into every pane and which otherwise lands
-in the output as `reply_lands_in`.
+It records a real herdr session with real panes, so the mail that appears in
+the right-hand panes was typed there by the server over the same path delivery
+uses for a live agent. What it does not use is live agents: `demo/agent.sh` is
+a pane that draws a prompt, blocks on stdin, and answers mail — enough to be
+delivered to, deterministic, free, and with no repository of yours in frame.
+herdr does not classify it as an agent it knows, which is a supported case, so
+those panes answer to the label `demo/setup.sh` gives them.
+
+Everything is pinned away from your own setup: port 7788, a store and token
+under `demo/.state`, and `HERDR_BIN` pointed at `demo/herdr-demo`, which pins
+herdr to the `agxdemo` session and its own socket. The session is deleted on
+stop, because herdr restores a stopped session's layout and the next recording
+would open with the last one's panes.
+
+Four things leak the recorder's own machine into the frames if they are not
+handled, and all four did at least once while this was built:
+
+  - `HERDR_SOCKET_PATH` and friends, which herdr exports into every pane. The
+    demo is nearly always started from inside one, so the wrapper unsets them;
+    herdr also refuses to nest a session while they are set.
+  - `HERDR_PANE_ID`, which the CLI prefers over asking, and which otherwise
+    appears in the output as `reply_lands_in`.
+  - the login shell's prompt, which carries a username until `setup.sh`
+    replaces it — so the layout is built inside `Hide`.
+  - the server's own working directory: `listTargets` drops a pane whose cwd is
+    the server's, so the panes live under `/tmp/agxdemo` instead.

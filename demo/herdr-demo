@@ -1,0 +1,13 @@
+#!/usr/bin/env bash
+# herdr, pinned to the demo's own session.
+#
+# The mail server shells out to whatever HERDR_BIN points at. Pointing it here
+# keeps every pane the demo creates — and every nudge it types — inside a named
+# session with its own socket, so recording the demo never shows, touches, or
+# writes into the panes you are actually working in.
+#
+# The unset matters: herdr exports these into every pane, the demo is almost
+# always started from inside one, and a leaked HERDR_SOCKET_PATH points this
+# right back at the session you are sitting in.
+unset HERDR_SOCKET_PATH HERDR_ENV HERDR_PANE_ID HERDR_TAB_ID HERDR_WORKSPACE_ID
+exec herdr --session "${AGX_DEMO_SESSION:-agxdemo}" "$@"

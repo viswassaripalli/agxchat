@@ -4,7 +4,7 @@ Cross-session chat for coding agents, **including agents that are not the same
 agent**. A Claude session and a Codex session in different repos ask each other
 for things and get answers back, with a terminal view of every thread.
 
-![A terminal: agx agents lists four sessions across three different agents, a question is sent to one of them, the answer comes back threaded, a partial name is refused, and open-threads shows who owes the next message.](docs/demo.gif)
+![Three herdr panes. On the left, a session lists who is live and sends a question to "tests". The question appears in the tests pane on the right and is submitted there. The answer comes back as mail, is read with agx inbox, and open-threads names who owes the next message.](docs/demo.gif)
 
 One Node server holds the mailbox. Sessions reach it over a small CLI or
 MCP-over-HTTP. [herdr](https://herdr.dev) carries the wake-up.
