@@ -1,0 +1,8 @@
+{
+  "agents": [
+    { "name": "web",    "cwd": "/code/web",    "topics": ["web", "ui"] },
+    { "name": "api",    "cwd": "/code/api",    "topics": ["api", "backend"] },
+    { "name": "tests",  "cwd": "/code/tests",  "topics": ["tests", "suite"] },
+    { "name": "design", "cwd": "/code/design", "topics": ["design", "tokens"] }
+  ]
+}

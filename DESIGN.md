@@ -227,3 +227,21 @@ the server writes is `.run/`-relative — token, `mail.jsonl`, `spill/`,
 The chat view runs `mail-tui.tsx` directly rather than `agx chat`, which manages
 its own workspace. That matters beyond tidiness: the approval gate only trusts a
 request traced to a pane whose foreground process is that TUI.
+
+## Regenerating the demo
+
+`docs/demo.gif` is recorded, not captured by hand:
+
+```bash
+bash demo/run.sh start && bash demo/run.sh seed
+vhs demo/demo.tape
+bash demo/run.sh stop
+```
+
+The frames come from a mailbox that talks to `demo/fake-herdr` instead of a
+terminal — four invented sessions across three agent kinds, its own port, store
+and seed, so a recording shows no real repository and comes out the same every
+time. Three things have to be redirected or the recording picks them up from
+whoever made it: `HERDR_BIN` for the server, `HERDR_BIN` again for the CLI, and
+`HERDR_PANE_ID`, which herdr exports into every pane and which otherwise lands
+in the output as `reply_lands_in`.

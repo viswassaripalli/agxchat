@@ -5,3 +5,4 @@ node_modules/
 agents.json
 .mcp.json.bak-*
 .DS_Store
+demo/.state/
