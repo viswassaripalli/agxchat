@@ -729,7 +729,14 @@ type Resolution =
        */
       spaceClash?: { label: string; panes: { name: string; paneId: string | null }[]; note: string };
     }
-  | { ok: false; reason: 'unknown'; known: string[] }
+  | {
+      ok: false;
+      reason: 'unknown';
+      known: string[];
+      /** Panes that carry the name but have no agent running in them. */
+      inactive?: { label: string; paneId: string | null; cwd: string | null }[];
+      hint?: string;
+    }
   | { ok: false; reason: 'ambiguous'; candidates: { name: string; repo: string | null; paneId: string | null }[] }
   /** A substring of some repo name, which is a guess rather than an address. */
   | {
@@ -911,7 +918,32 @@ async function resolveTarget(to: string, agents: HerdrAgent[]): Promise<Resoluti
     };
   }
 
-  return { ok: false, reason: 'unknown', known: [...registry.values()].map((s) => s.name) };
+  // Before giving up: the name may belong to a pane that simply has no agent in
+  // it. A space the sender is looking at on screen, with a shell sitting in it,
+  // is unreachable for exactly one reason and the fix is one command — saying
+  // only "unknown" sends them looking for a typo instead.
+  const inactive = agents
+    .filter(
+      (a) =>
+        isUnidentified(a) &&
+        ((a.workspaceLabel && key(a.workspaceLabel) === t) ||
+          (a.repo && key(a.repo) === t) ||
+          a.paneId === to),
+    )
+    .map((a) => ({ label: a.workspaceLabel ?? a.repo ?? a.paneId!, paneId: a.paneId, cwd: a.cwd }));
+
+  const known = [...registry.values()].map((s) => s.name);
+  if (inactive.length) {
+    const first = inactive[0];
+    return {
+      ok: false,
+      reason: 'unknown',
+      known,
+      inactive,
+      hint: `"${to}" is a pane (${first.paneId}) with no agent running in it, so nothing there can read mail. Start one: agx open ${to} --cwd ${first.cwd ?? '<path>'}`,
+    };
+  }
+  return { ok: false, reason: 'unknown', known };
 }
 
 // ─────────────────────────────── delivery ───────────────────────────────

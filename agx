@@ -331,7 +331,8 @@ for a in json.load(sys.stdin)['agents']:
     TO="${1:?usage: mail send <to> <subject> <body...>}"; shift
     SUBJECT="${1:?subject required}"; shift
     BODY="$*"
-    python3 -c "
+    post_mail() {
+      python3 -c "
 import json,sys,urllib.request
 frm,to,subject,body,inline,base,expect,requested_by,via,from_pane,thread,token = sys.argv[1:13]
 pointers=[p for p in sys.argv[13:] if p]
@@ -349,6 +350,52 @@ try:
 except urllib.error.HTTPError as e:
     print(e.read().decode()); sys.exit(1)
 " "$FROM" "$TO" "$SUBJECT" "$BODY" "$INLINE" "$BASE" "$EXPECT" "$REQUESTED_BY" "$VIA" "$(my_pane)" "$THREAD" "$(agx_token)" "${POINTERS[@]}"
+    }
+
+    # `|| RC=$?` rather than a bare assignment: under `set -e` a failing command
+    # substitution exits the script before the status can be read, and an
+    # unresolved name comes back as a non-200 whose body is the one worth acting
+    # on below.
+    RC=0
+    OUT="$(post_mail)" || RC=$?
+
+    # The name matched a pane with no agent in it. Nothing there can read mail,
+    # and the fix is one command we already have, so run it rather than printing
+    # it: start a session in that pane's directory and send again. Only ever for
+    # a pane that already exists under that name — an unrecognised name is still
+    # just unknown, so a typo does not spawn anything.
+    IDLE_PANE="$(printf '%s' "$OUT" | python3 -c "
+import json,sys
+try: d=json.load(sys.stdin)
+except Exception: raise SystemExit
+if d.get('reason')=='unknown' and d.get('inactive'):
+    print(d['inactive'][0].get('paneId') or '')
+" 2>/dev/null || true)"
+
+    if [ -n "$IDLE_PANE" ]; then
+      echo "agx: no agent is running in $IDLE_PANE — starting one there" >&2
+      # In THAT pane, not a new one. Opening a fresh pane with --space would
+      # leave two spaces carrying the same label, which the resolver then
+      # refuses as ambiguous; opening it without --space buries the session in
+      # whatever workspace the sender happened to be in.
+      START_KIND="${AGX_KIND:-$(my_kind || true)}"; START_KIND="${START_KIND:-claude}"
+      if herdr agent start "$TO" --kind "$START_KIND" --pane "$IDLE_PANE" >&2; then
+        # herdr needs a moment to see the agent come up, and a session started
+        # somewhere it does not already trust stops at its own trust prompt.
+        for _ in $(seq 20); do
+          sleep 1
+          if api /agents 2>/dev/null | TO="$TO" python3 -c "
+import json,os,sys
+t=os.environ['TO'].lower()
+sys.exit(0 if any(a['name'].lower()==t and a.get('kind') for a in json.load(sys.stdin)['agents']) else 1)
+" 2>/dev/null; then break; fi
+        done
+        RC=0
+        OUT="$(post_mail)" || RC=$?
+      fi
+    fi
+    printf '%s\n' "$OUT"
+    exit $RC
     ;;
   inbox)
     WHO="${1:-$FROM}"
