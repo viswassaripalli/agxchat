@@ -458,7 +458,10 @@ export async function inferKind(paneId: string): Promise<string | null> {
  * pattern delays mail, while a WRONG pattern submits over a person's unsent
  * work. Add to this only from a prompt you have actually read off a pane.
  */
-const PROMPT_PLACEHOLDERS = [/^Try\s+["\u201c]/i];
+const PROMPT_PLACEHOLDERS = [
+  /^Try\s+["\u201c]/i, // claude:  Try "edit <filepath> to..."
+  /^Ask\s+Codex\s+to\s+do\s+anything\b/i, // codex:  Ask Codex to do anything
+];
 
 /**
  * Drafts seen per pane, to tell a draft being written from one that is parked.

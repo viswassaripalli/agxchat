@@ -2,9 +2,9 @@
 # The demo mailbox: a real server, driving a real herdr, in a session of its own.
 #
 #   bash demo/run.sh start    # mail server on :7788, pointed at the demo session
+#   bash demo/boot.sh         # the session, two agents, the chat view
+#   vhs demo/demo.tape
 #   bash demo/run.sh stop     # server and demo session, nothing else
-#
-# Then record:  vhs demo/demo.tape
 #
 # Nothing here reaches your mailbox or your panes. The port, store, token and
 # seed all point inside demo/, and HERDR_BIN points at a herdr pinned to the
@@ -34,18 +34,7 @@ up() { curl -sf --max-time 2 "http://127.0.0.1:7788/health" >/dev/null 2>&1; }
 case "${1:-start}" in
   start)
     mkdir -p "$STATE"
-    chmod +x "$HERE/herdr-demo" "$HERE/agent.sh" "$HERE/setup.sh"
-    # The panes must not sit in the server's own directory: listTargets drops a
-    # pane whose cwd is the server's, so that the mailbox never addresses the
-    # terminal it is running in. The attaching pane inherits the recorder's cwd,
-    # so the recording starts from one of these instead.
-    BASE="${AGX_DEMO_DIR:-/tmp/agxdemo}"
-    for n in web api tests; do mkdir -p "$BASE/$n"; done
-    # A fixed entry point the pane can reach without knowing where the repo is:
-    # its shell starts clean, so nothing from the recorder's environment is there
-    # to tell it.
-    printf '#!/usr/bin/env bash\nexec bash %s/setup.sh "$@"\n' "$HERE" > "$BASE/setup"
-    chmod +x "$BASE/setup"
+    chmod +x "$HERE/herdr-demo" "$HERE/boot.sh"
     up && { echo "demo mailbox already up on :7788"; exit 0; }
     rm -f "$AGX_STORE" "$AGX_TOKEN_FILE"
     cd "$ROOT"

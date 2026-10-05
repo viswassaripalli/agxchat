@@ -230,37 +230,47 @@ request traced to a pane whose foreground process is that TUI.
 
 ## Regenerating the demo
 
-`docs/demo.gif` is recorded, not captured by hand:
-
 ```bash
-bash demo/run.sh start
+bash demo/run.sh start && bash demo/boot.sh
 vhs demo/demo.tape
 bash demo/run.sh stop
 ```
 
-It records a real herdr session with real panes, so the mail that appears in
-the right-hand panes was typed there by the server over the same path delivery
-uses for a live agent. What it does not use is live agents: `demo/agent.sh` is
-a pane that draws a prompt, blocks on stdin, and answers mail — enough to be
-delivered to, deterministic, free, and with no repository of yours in frame.
-herdr does not classify it as an agent it knows, which is a supported case, so
-those panes answer to the label `demo/setup.sh` gives them.
+Everything in `docs/demo.gif` is real: a herdr session, a Claude session, a
+Codex session, the mail server, and the chat view. Nobody types an `agx`
+command — the instruction is plain English and the session reaches for the
+rule on its own. Two models are thinking, so no two takes are alike.
 
-Everything is pinned away from your own setup: port 7788, a store and token
-under `demo/.state`, and `HERDR_BIN` pointed at `demo/herdr-demo`, which pins
-herdr to the `agxdemo` session and its own socket. The session is deleted on
-stop, because herdr restores a stopped session's layout and the next recording
-would open with the last one's panes.
+`demo/boot.sh` builds the session before anything records it. A named session
+only exists once a terminal attaches, so one is attached under `script`, which
+supplies the pty herdr needs, and left in the background; the layout is then
+built over the CLI, and the recording attaches to something already finished.
+`demo/fixtures` seeds two small repositories, because with empty directories
+the honest answer is "there is no code here" and the demo shows the plumbing
+working around a question nobody could answer.
 
-Four things leak the recorder's own machine into the frames if they are not
-handled, and all four did at least once while this was built:
+Everything is pinned away from your own setup: port 7788, store and token under
+`demo/.state`, and `HERDR_BIN` pointed at `demo/herdr-demo`, which pins herdr
+to the `agxdemo` session and its own socket. The session is deleted on stop,
+because herdr restores a stopped session's layout and the next recording would
+open with the last one's panes.
 
-  - `HERDR_SOCKET_PATH` and friends, which herdr exports into every pane. The
-    demo is nearly always started from inside one, so the wrapper unsets them;
-    herdr also refuses to nest a session while they are set.
-  - `HERDR_PANE_ID`, which the CLI prefers over asking, and which otherwise
+What it takes to get a clean take, each learned by producing a dirty one:
+
+  - `HERDR_SOCKET_PATH` and friends must be unset. herdr exports them into
+    every pane, the demo is nearly always started from inside one, and herdr
+    refuses to start a session while they are set.
+  - `HERDR_PANE_ID` likewise: the CLI prefers it over asking, and it otherwise
     appears in the output as `reply_lands_in`.
-  - the login shell's prompt, which carries a username until `setup.sh`
-    replaces it — so the layout is built inside `Hide`.
-  - the server's own working directory: `listTargets` drops a pane whose cwd is
-    the server's, so the panes live under `/tmp/agxdemo` instead.
+  - Both agents stop at a trust prompt in a directory they have not seen, and
+    phrase it differently — claude defaults to "No, exit", codex to "Yes,
+    continue". Codex then reviews its session hooks on a second screen and sits
+    there; mail is delivered and nothing reads it, because the prompt is behind
+    a dialog.
+  - Codex needs `--no-daemon`: its shared background server refuses a second
+    client, and says so only in the pane, after herdr has reported the agent
+    started. `boot.sh` reads both panes afterwards for that reason.
+  - `USER` cannot be overridden to hide the name in `--for`: Claude Code
+    resolves its credentials through it and starts up logged out.
+  - The panes must not sit in the server's own directory, which `listTargets`
+    drops so that the mailbox never addresses the terminal it runs in.
