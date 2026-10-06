@@ -8,6 +8,7 @@
 #   mail inbox [name]
 #   mail thread <mail-id>
 #   mail reply <mail-id> <body...>
+#   agx ui                                    open (or restart) the chat view in the AGxChat workspace
 #
 # Put it on PATH once:  ln -s $HOME/agxchat/mail /usr/local/bin/agx
 set -euo pipefail
@@ -117,7 +118,7 @@ IDENTITY_PROBLEM=""
 # failed, so every clean start printed a warning about its own server being
 # down. Skip the probe where identity is not used.
 case "${1:-}" in
-  serve|stop|status|chat|update|uninstall|help|--help|-h) FROM="${FROM:-$(basename "$(pwd)")}" ;;
+  serve|stop|status|chat|ui|update|uninstall|help|--help|-h) FROM="${FROM:-$(basename "$(pwd)")}" ;;
 esac
 if [ -z "$FROM" ]; then
   # Identity is per pane, not per directory: two terminals in one repo are two
@@ -170,6 +171,8 @@ THREAD="${THREAD:-}"
 POINTERS=("${POINTERS[@]:-}")
 
 CMD="${1:-help}"; shift || true
+# `agx ui` is the short way back to the chat view in its own AGxChat workspace.
+if [ "$CMD" = "ui" ]; then CMD=chat; set -- --space "$@"; fi
 
 running() { curl -sf --max-time 2 "$BASE/health" >/dev/null 2>&1; }
 
@@ -916,6 +919,6 @@ except urllib.error.HTTPError as e:
 " "$ID" "$FROM" "$BODY" "$BASE" "$(agx_token)"
     ;;
   *)
-    sed -n '2,10p' "$0" | sed 's/^# \{0,1\}//'
+    sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'
     ;;
 esac

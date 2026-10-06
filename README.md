@@ -216,6 +216,7 @@ everyone finds out which is which.
 ## Reading
 
 `agx chat` opens the thread view; `--space` gives it its own herdr workspace.
+`agx ui` is shorthand for `agx chat --space`.
 
 | Key | |
 | --- | --- |
